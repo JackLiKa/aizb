@@ -1,6 +1,6 @@
 'use strict';
 
-const PRIORITY = { gift: 100, manual: 95, song: 70, follow: 55, comment: 30, like: 10, enter: 10 };
+const PRIORITY = { gift: 100, manual: 95, song: 70, follow: 55, comment: 30, enter: 18, like: 10 };
 
 const SONG_RE = /(?:点歌|来一首|来首|唱一?首|放一?首|放个|想听)\s*[:：]?\s*(.{1,24})$/;
 
@@ -30,6 +30,7 @@ class Director {
     this.paused = false;
     this.history = [];
     this.userCooldown = new Map();
+    this.enterCooldown = new Map();
     this.songCooldown = new Map();
     this.recentTexts = new Map();
     this.pendingUtterances = new Map();
@@ -37,8 +38,10 @@ class Director {
     this.currentState = 'idle';
     this.utteranceSeq = 0;
     this.taskSeq = 0;
+    this.draft = null;
+    this.draftSeq = 0;
     this.startedAt = Date.now();
-    this.stats = { handled: 0, speaks: 0, errors: 0, dropped: 0, interrupted: 0 };
+    this.stats = { handled: 0, speaks: 0, welcomes: 0, errors: 0, dropped: 0, interrupted: 0 };
     this._timer = null;
     this._overlayTimer = null;
   }
@@ -66,7 +69,8 @@ class Director {
     if (!ev) return;
     if (ev.type !== 'manual') this.send({ type: 'feed', event: this._publicEvent(ev) });
 
-    if (ev.type === 'like' || ev.type === 'enter') return;
+    if (ev.type === 'like') return;
+    if (ev.type === 'enter' && this.config.behavior?.welcomeEnabled === false) return;
     if (!this._accept(ev)) return;
 
     const task = { ev, priority: PRIORITY[ev.type] || 20, seq: ++this.taskSeq };
@@ -136,6 +140,18 @@ class Director {
     const now = Date.now();
     if (this.paused && ev.type !== 'manual' && ev.type !== 'gift') return false;
 
+    // 进场欢迎：每个观众默认 10 分钟内只欢迎一次，避免刷屏
+    if (ev.type === 'enter') {
+      if (this.config.behavior?.welcomeEnabled === false) return false;
+      const lastEnter = this.enterCooldown.get(ev.user) || 0;
+      if (now - lastEnter < (this.config.behavior.welcomeCooldownSec || 600) * 1000) return false;
+      this.enterCooldown.set(ev.user, now);
+      if (this.enterCooldown.size > 500) {
+        for (const [k, t] of this.enterCooldown) if (now - t > 3600000) this.enterCooldown.delete(k);
+      }
+      return true;
+    }
+
     if (ev.type === 'comment' || ev.type === 'follow') {
       const last = this.userCooldown.get(ev.user) || 0;
       if (now - last < (this.config.behavior.userCooldownSec || 25) * 1000) return false;
@@ -150,7 +166,8 @@ class Director {
           for (const [k, t] of this.recentTexts) if (now - t > 300000) this.recentTexts.delete(k);
         }
         const night = this._isNight();
-        const p = night ? (this.config.night.replyProbability ?? 0.08) : (this.config.behavior.replyProbability ?? 0.5);
+        const ask = /[?？]|吗|怎么|为什么|啥|什么|能不能|可不可以|在不在/.test(ev.text);
+        const p = ask ? 1 : (night ? (this.config.night.replyProbability ?? 0.08) : (this.config.behavior.replyProbability ?? 0.5));
         if (Math.random() > p) return false;
       } else if (Math.random() > 0.6) {
         return false;
@@ -209,6 +226,12 @@ class Director {
   // ---------- 处理 ----------
 
   async _handle(ev) {
+    if (ev.type === 'enter') {
+      this.stats.welcomes += 1;
+      this.send({ type: 'emote', name: 'happy' });
+      await this._talk(ev, { maxTokens: 60 });
+      return;
+    }
     if (ev.type === 'gift') {
       this.metering.recordGift(ev.user, ev.giftName || '礼物', ev.count, ev.value);
       this._broadcastOverlay();
@@ -274,17 +297,71 @@ class Director {
       },
     });
 
-    const full = await this._speak(gen, controller.signal);
-    if (full) reply = full;
-
+    // 人工确认模式（合规：真人驱动/值守）：只生成草稿，等真人在控制台点「发送」才播报
+    if (this.config.compliance?.humanInLoop) {
+      let text = '';
+      for await (const delta of gen) {
+        if (controller.signal.aborted) throw abortError();
+        text += delta;
+      }
+      text = text.trim();
+      if (text) {
+        this.draftSeq += 1;
+        this.draft = { id: `d${this.draftSeq}`, text, event: this._publicEvent(ev), ts: Date.now() };
+        reply = text;
+        this.logger.info(`AI 草稿待人工确认：${text.slice(0, 40)}`);
+        this._broadcastOverlay();
+      }
+    } else {
+      const full = await this._speak(gen, controller.signal);
+      if (full) reply = full;
+    }
     this.history.push({ role: 'user', content: this._historyLine(ev) });
     this.history.push({ role: 'assistant', content: reply || '……' });
     const keep = Math.max(2, (this.config.llm.historyTurns || 8) * 2);
     if (this.history.length > keep) this.history.splice(0, this.history.length - keep);
   }
 
+  // ---------- 人工确认（合规） ----------
+
+  // 真人点「发送」：把 AI 草稿原样播报出来（不再调用 LLM）
+  async speakExact(text) {
+    const clean = String(text || '').trim().slice(0, 200);
+    if (!clean) return { ok: false, error: 'empty' };
+    if (this.busy) return { ok: false, error: 'busy' };
+    this.draft = null;
+    const controller = new AbortController();
+    this.current = { controller };
+    this.busy = true;
+    try {
+      const gen = (async function* once() { yield clean; })();
+      await this._speak(gen, controller.signal);
+      this.history.push({ role: 'assistant', content: clean });
+      const keep = Math.max(2, (this.config.llm.historyTurns || 8) * 2);
+      if (this.history.length > keep) this.history.splice(0, this.history.length - keep);
+    } catch (err) {
+      if (err.name !== 'AbortError') this.logger.error(`播报草稿失败: ${err.message}`);
+      return { ok: false, error: err.message };
+    } finally {
+      this.busy = false;
+      this.current = null;
+      this._setState(this.jukebox.current ? 'singing' : 'idle');
+      this._broadcastOverlay();
+    }
+    return { ok: true };
+  }
+
+  discardDraft(id) {
+    if (!this.draft) return false;
+    if (id && this.draft.id !== id) return false;
+    this.draft = null;
+    this._broadcastOverlay();
+    return true;
+  }
+
   _historyLine(ev) {
     if (ev.type === 'gift') return `观众${ev.user}送了${ev.giftName}×${ev.count}`;
+    if (ev.type === 'enter') return `观众${ev.user}进入了直播间`;
     if (ev.type === 'song') return ev.song ? `观众${ev.user}点了《${ev.song.title}》` : `观众${ev.user}想点《${ev.query}》，没有找到`;
     if (ev.type === 'follow') return `观众${ev.user}关注了直播间`;
     if (ev.type === 'manual') return `（房主指示）${ev.text}`;
@@ -495,6 +572,7 @@ class Director {
       tts: this.voice.provider,
       music: this.jukebox.snapshot().current,
       night: this._isNight(),
+      draft: this.draft,
       stats: { ...this.stats },
       tokensToday: m.today.tokens,
       costToday: m.today.cost,

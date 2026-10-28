@@ -97,10 +97,33 @@ html, body {
 }
 
 .ai-badge {
-  font-size: 11px;
-  color: var(--muted);
-  opacity: 0.9;
+  display: inline-block;
+  margin-top: 4px;
+  padding: 3px 9px;
+  font-size: 14px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.96);
+  background: rgba(0, 0, 0, 0.42);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 6px;
   letter-spacing: 0.5px;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+}
+
+.ai-watermark {
+  position: absolute;
+  right: 26px;
+  bottom: 54px;
+  padding: 5px 12px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: rgba(255, 255, 255, 0.9);
+  background: rgba(0, 0, 0, 0.38);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  pointer-events: none;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.65);
 }
 
 /* ---------- 面板 ---------- */

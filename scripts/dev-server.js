@@ -6,9 +6,11 @@
 const path = require('path');
 
 const { Logger } = require('../electron/core/logger');
-const { loadConfig } = require('../electron/core/config');
+const { loadConfig, llmStatus } = require('../electron/core/config');
+const { describeOverrides, describeEnvFiles } = require('../electron/core/env');
 const { Store } = require('../electron/core/store');
 const { Metering } = require('../electron/core/metering');
+const { Analytics } = require('../electron/core/analytics');
 const { Brain } = require('../electron/core/brain');
 const { Voice } = require('../electron/core/voice');
 const { Jukebox } = require('../electron/core/jukebox');
@@ -28,7 +30,8 @@ function arg(name, fallback) {
 
 async function main() {
   const dataDir = path.join(ROOT, 'data');
-  const configHandle = loadConfig(dataDir);
+  // 纯 Node 调试：无 Electron userData，故 userData/.env 回退到 dataDir 的父目录（= 仓库根，自动去重）
+  const configHandle = loadConfig(dataDir, { rootDir: ROOT });
   const config = configHandle.config;
   if (arg('port')) {
     config.server.port = Number(arg('port'));
@@ -41,8 +44,21 @@ async function main() {
   if (arg('nosim')) config.source.type = 'off';
 
   const logger = new Logger({ dir: path.join(dataDir, 'logs'), level: 'debug' });
+  const envFiles = describeEnvFiles(configHandle.env);
+  if (envFiles.length) logger.info(`.env: ${envFiles.join(' | ')}`);
+  if (configHandle.envOverrides.length) {
+    logger.info(`.env 已生效: ${describeOverrides(configHandle.envOverrides).join(' | ')}`);
+  }
+  for (const w of configHandle.envWarnings || []) logger.warn(w);
+  logger.info(`LLM Key 来源: ${llmStatus(config, configHandle.env).keySource}`);
   const store = new Store(path.join(dataDir, 'state.json'), logger.child('store'));
   const metering = new Metering({ store, config, logger: logger.child('metering') });
+  const analytics = new Analytics({
+    dataDir,
+    logger: logger.child('analytics'),
+    config,
+    getMetering: () => metering,
+  });
   const brain = new Brain({ config, logger: logger.child('brain'), metering });
   const voice = new Voice({ config, logger: logger.child('voice'), dataDir });
   const jukebox = new Jukebox({ config, logger: logger.child('jukebox'), dataDir });
@@ -71,8 +87,12 @@ async function main() {
     watchdog,
     stageDir: path.join(ROOT, 'stage'),
     adminDir: path.join(ROOT, 'admin'),
+    dashboardDir: path.join(ROOT, 'dashboard'),
     dataDir,
     getDirector: () => director,
+    analytics,
+    getDouyinStatus: () => sources.snapshot(),
+    getLlmMode: () => brain.mode,
     onRestartStage: () => logger.info('（dev-server）重启舞台请求'),
     onFocusStage: () => false,
   });
@@ -102,6 +122,7 @@ async function main() {
   const base = `http://${host}:${port}`;
   logger.info(`舞台: ${base}/stage/`);
   logger.info(`控制台: ${base}/admin/`);
+  logger.info(`数据看板: ${base}/dashboard/`);
   logger.info(`AI: ${brain.mode} | TTS: ${voice.provider} | 曲库: ${jukebox.index.length} 首`);
 
   const shutdown = async () => {
@@ -109,6 +130,7 @@ async function main() {
     try { sources.stop(); } catch (_) { /* ignore */ }
     try { director.stop(); } catch (_) { /* ignore */ }
     try { watchdog.stop(); } catch (_) { /* ignore */ }
+    try { await analytics.flush(); } catch (_) { /* ignore */ }
     store.close();
     try { await ctl.close(); } catch (_) { /* ignore */ }
     process.exit(0);

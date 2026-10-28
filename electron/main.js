@@ -5,9 +5,11 @@ const fs = require('fs');
 const { app, BrowserWindow, Tray, Menu, nativeImage, dialog, powerSaveBlocker, shell, screen } = require('electron');
 
 const { Logger } = require('./core/logger');
-const { loadConfig } = require('./core/config');
+const { loadConfig, llmStatus } = require('./core/config');
+const { describeOverrides, describeEnvFiles } = require('./core/env');
 const { Store } = require('./core/store');
 const { Metering } = require('./core/metering');
+const { Analytics } = require('./core/analytics');
 const { Brain } = require('./core/brain');
 const { Voice } = require('./core/voice');
 const { Jukebox } = require('./core/jukebox');
@@ -20,6 +22,7 @@ const isDev = !app.isPackaged;
 const ROOT = path.join(__dirname, '..');
 const STAGE_DIR = path.join(ROOT, 'stage');
 const ADMIN_DIR = path.join(ROOT, 'admin');
+const DASHBOARD_DIR = path.join(ROOT, 'dashboard');
 const ICON = path.join(ROOT, 'build', 'icon.png');
 
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
@@ -44,6 +47,7 @@ let director = null;
 let sources = null;
 let watchdog = null;
 let metering = null;
+let analytics = null;
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -63,14 +67,27 @@ async function bootstrap() {
   fs.mkdirSync(dataDir, { recursive: true });
   fs.mkdirSync(path.join(dataDir, 'logs'), { recursive: true });
 
-  configHandle = loadConfig(dataDir);
+  configHandle = loadConfig(dataDir, { userDataDir: app.getPath('userData') });
   config = configHandle.config;
 
   logger = new Logger({ dir: path.join(dataDir, 'logs'), maxFiles: 7 });
   logger.info('应用启动', { version: app.getVersion(), dataDir, packaged: app.isPackaged });
+  const envFiles = describeEnvFiles(configHandle.env);
+  if (envFiles.length) logger.info(`.env: ${envFiles.join(' | ')}`);
+  if (configHandle.envOverrides.length) {
+    logger.info(`.env 已生效: ${describeOverrides(configHandle.envOverrides).join(' | ')}`);
+  }
+  for (const w of configHandle.envWarnings || []) logger.warn(w);
+  logger.info(`LLM Key 来源: ${llmStatus(config, configHandle.env).keySource}`);
 
   store = new Store(path.join(dataDir, 'state.json'), logger);
   metering = new Metering({ store, config, logger });
+  analytics = new Analytics({
+    dataDir,
+    logger: logger.child('analytics'),
+    config,
+    getMetering: () => metering,
+  });
   const brain = new Brain({ config, logger, metering });
   const voice = new Voice({ config, logger, dataDir });
   const jukebox = new Jukebox({ config, logger, dataDir });
@@ -103,8 +120,12 @@ async function bootstrap() {
     watchdog,
     stageDir: STAGE_DIR,
     adminDir: ADMIN_DIR,
+    dashboardDir: DASHBOARD_DIR,
     dataDir,
     getDirector: () => director,
+    analytics,
+    getDouyinStatus: () => sources.snapshot(),
+    getLlmMode: () => brain.mode,
     onRestartStage: () => {
       if (mainWindow) mainWindow.webContents.reloadIgnoringCache();
     },
@@ -299,6 +320,7 @@ app.on('before-quit', () => {
   try { watchdog?.stop(); } catch (_) { /* ignore */ }
   try { store?.close(); } catch (_) { /* ignore */ }
   try { serverCtl?.close(); } catch (_) { /* ignore */ }
+  try { analytics?.flush?.(); } catch (_) { /* ignore */ }
   try { if (psb !== null) powerSaveBlocker.stop(psb); } catch (_) { /* ignore */ }
   try { logger?.info('应用退出'); logger?.close(); } catch (_) { /* ignore */ }
 });

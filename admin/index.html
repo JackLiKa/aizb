@@ -62,10 +62,38 @@
         <dt>运行时长</dt><dd id="sUptime">00:00:00</dd>
         <dt>当前状态</dt><dd id="sState">待机</dd>
         <dt>弹幕源</dt><dd id="sSource">simulator</dd>
+        <dt>抖音房间</dt><dd id="sRoom">-</dd>
+        <dt>LLM 密钥</dt><dd id="sKey">-</dd>
         <dt>舞台心跳</dt><dd id="sBeat">-</dd>
         <dt>1 小时重启</dt><dd id="sRestarts">0</dd>
         <dt>最近错误</dt><dd id="sErrors">0</dd>
       </dl>
+    </section>
+
+    <section class="card">
+      <h2>抖音真实直播</h2>
+      <p class="hint">粘贴直播间地址或房间号，采集器会用无头 Chrome 观察直播间弹幕/礼物并上报（非官方接口，平台改版可能失效）。</p>
+      <div class="row">
+        <input id="douyinRoom" class="input" placeholder="https://live.douyin.com/123456789 或 123456789" />
+        <button class="btn primary" id="btnDouyin">保存并连接</button>
+      </div>
+      <div class="hint" id="douyinMsg"></div>
+      <dl class="kv">
+        <dt>采集器</dt><dd id="dyStatus">未启动</dd>
+        <dt>已抓事件</dt><dd id="dyEvents">0</dd>
+        <dt>最近事件</dt><dd id="dyAgo">-</dd>
+      </dl>
+    </section>
+
+    <section class="card" id="draftCard" hidden>
+      <h2>AI 回复草稿（需人工确认）</h2>
+      <p class="hint">合规模式：AI 只生成草稿，你点「发送这条」才会播报（真人驱动/值守）。</p>
+      <div class="draft-text" id="draftText"></div>
+      <div class="row">
+        <button class="btn primary" id="btnDraftSend">发送这条</button>
+        <button class="btn" id="btnDraftDiscard">丢弃</button>
+        <span class="hint" id="draftMeta"></span>
+      </div>
     </section>
 
     <section class="card">
@@ -90,6 +118,7 @@
         <select id="sourceSelect" class="select">
           <option value="simulator">模拟弹幕（自动生成）</option>
           <option value="ingest">外部接入（/ingest）</option>
+          <option value="douyin">抖音真实直播（采集器）</option>
           <option value="off">关闭自动事件</option>
         </select>
         <button class="btn" id="btnSource">切换</button>
@@ -116,6 +145,7 @@
     <section class="card span-2">
       <h2>配置</h2>
       <p class="hint">保存后立即生效的部分：人设、LLM、TTS、行为、夜间模式。端口和窗口尺寸需要重启应用。</p>
+      <p class="hint">API Key 不在这里改：请编辑项目根目录 <code>.env</code> 文件（已加入 .gitignore，不会上传 GitHub），改完重启服务。</p>
       <textarea id="configText" rows="16" spellcheck="false"></textarea>
       <div class="row">
         <button class="btn primary" id="btnSaveConfig">保存配置</button>

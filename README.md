@@ -50,11 +50,21 @@ npm run server -- --seed    # 弹幕更快，方便看效果
 ### 第一次配置
 
 1. 打开控制台（托盘 → 打开控制台，或 `http://127.0.0.1:17890/admin/`）。
-2. 在「配置」里填 `llm.apiKey`，保存即热生效。
+2. 在项目根目录的 `.env` 里填 `LLM_API_KEY`（模板见 `.env.example`，该文件已 gitignore，不会上传 GitHub），改完重启服务即进入 LLM 模式。
 3. 改人设改 `persona.system`；改音色改 `tts.voice`（中文推荐 `zh-CN-XiaoxiaoNeural`、`zh-CN-YunxiNeural`）。
 4. 把 mp3 放进 `data/music/`，点歌台会立刻索引。
 
 > 打包后的数据目录在 `%APPDATA%\大肥鱼直播\data`；开发模式在仓库的 `data/`。
+
+## 接入真实直播（Key / 弹幕 / 礼物）
+
+- **API Key**：填项目根目录的 **`.env`**（模板 `.env.example`，已加入 `.gitignore`，不会上传 GitHub），改完重启服务。控制台「运行状态 → LLM 密钥」会显示来源（`.env` / config.json / 未配置）。
+- **真实弹幕 + 礼物**：抖音没有公开观众弹幕接口，项目提供 `scripts/douyin-collector.js`：用无头 Chrome 打开你的直播间、观察聊天区 DOM，把弹幕/礼物/关注转成事件 `POST /ingest`。控制台「抖音真实直播」卡片填房间号即可一键连接；采集器由主进程托管，异常退出自动重连。选择器在 `scripts/douyin-selectors.json`，平台改版只改这里。
+- **真实 token 计量**：配好 Key 后，token 直接来自供应商返回的 `usage`（不再估算）；单价在 `data/config.json → metering` 按你的供应商实际价格设置。
+- **推流**：本应用只负责「画面 + 声音」，窗口捕获与音频路由交给直播伴侣/OBS；完整步骤（窗口捕获、VB-Cable 音频、合规、排错）见 **[docs/真实直播接入指南.md](docs/真实直播接入指南.md)**。
+- **合规模式（重要）**：`data/config.json → compliance.humanInLoop = true` 时，AI 只生成回复草稿，控制台「AI 回复草稿（需人工确认）」点「发送这条」才播报——对应抖音「虚拟人直播须真人驱动/值守」的要求；舞台已内置显著的 AI 标识（左上标签 + 右下水印）。
+- **数据看板**：真实事件逐条落盘 `data/analytics/events-YYYY-MM-DD.jsonl`，计量每 30s 快照；看板地址 **http://127.0.0.1:17890/dashboard/**，接口 `GET /api/stats?days=7`。
+- **抖音合规/报备**：处罚类型、整改方案、申诉模板见 **[docs/抖音合规整改.md](docs/抖音合规整改.md)**；报备用形象图见 **[docs/虚拟形象-报备素材/](docs/虚拟形象-报备素材/)**。
 
 ## 3D 虚拟形象
 

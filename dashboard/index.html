@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>直播数据看板 · 大肥鱼直播</title>
+  <link rel="stylesheet" href="./dashboard.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div>
+        <div class="brand-title">直播数据看板</div>
+        <div class="brand-sub">大肥鱼直播 · 24H 数据总览</div>
+      </div>
+    </div>
+    <div class="top-status">
+      <span class="pill" id="pillSource">弹幕源 -</span>
+      <span class="pill" id="pillRoom">房间 -</span>
+      <span class="pill" id="pillStage">舞台在线 0</span>
+      <span class="pill" id="pillMode">AI -</span>
+    </div>
+    <div class="top-actions">
+      <span class="updated" id="updatedAt">等待数据…</span>
+      <a class="btn" href="/admin/">返回控制台</a>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div class="error-banner" id="errorBanner" hidden></div>
+
+    <section class="block">
+      <div class="section-head">
+        <h2>今日概览</h2>
+        <span class="section-sub" id="todayDate">-</span>
+      </div>
+      <div class="metrics six">
+        <div class="metric">
+          <div class="metric-label">事件总数</div>
+          <div class="metric-value" id="mEvents">0</div>
+          <div class="metric-sub">今日累计</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">弹幕</div>
+          <div class="metric-value accent" id="mComments">0</div>
+          <div class="metric-sub">条</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">礼物</div>
+          <div class="metric-value warm" id="mGifts">0</div>
+          <div class="metric-sub" id="mGiftsSub">共 0 个</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">礼物价值</div>
+          <div class="metric-value warm" id="mGiftValue">¥0.00</div>
+          <div class="metric-sub">按事件单价 × 数量</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">在线观众</div>
+          <div class="metric-value green" id="mStage">0</div>
+          <div class="metric-sub">舞台连接数</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">AI 模式</div>
+          <div class="metric-value small" id="mMode">-</div>
+          <div class="metric-sub" id="mModeSub">房间 -</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="block">
+      <div class="section-head">
+        <h2>今日消耗</h2>
+        <span class="section-sub">LLM / TTS 实时计量（服务端每 30s 落盘）</span>
+      </div>
+      <div class="metrics four">
+        <div class="metric">
+          <div class="metric-label">消耗 tokens</div>
+          <div class="metric-value accent" id="mTokens">0</div>
+          <div class="metric-sub" id="mTokensSub">0 输入 / 0 输出</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">预估花费</div>
+          <div class="metric-value warm" id="mCost">¥0.00</div>
+          <div class="metric-sub" id="mCostSub">语音 0 字</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">调用次数</div>
+          <div class="metric-value" id="mCalls">0</div>
+          <div class="metric-sub" id="mCallsSub">说话 0 次</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">语音字数</div>
+          <div class="metric-value" id="mTts">0</div>
+          <div class="metric-sub" id="mTtsSub">放歌 0 首</div>
+        </div>
+      </div>
+    </section>
+
+    <div class="grid">
+      <section class="card span-2">
+        <div class="card-head">
+          <h3>近 7 天趋势</h3>
+          <span class="legend"><i class="dot dot-accent"></i>事件数</span>
+        </div>
+        <div class="chart" id="dayChart"></div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h3>Top 礼物</h3>
+          <span class="section-sub">近 7 天</span>
+        </div>
+        <ol class="rank-list" id="topGifts"></ol>
+      </section>
+
+      <section class="card span-2">
+        <div class="card-head">
+          <h3>近 7 天明细</h3>
+          <span class="section-sub" id="daysRange">-</span>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>日期</th>
+                <th>事件</th>
+                <th>弹幕</th>
+                <th>礼物</th>
+                <th>礼物价值</th>
+                <th>观众</th>
+                <th>tokens</th>
+                <th>花费</th>
+              </tr>
+            </thead>
+            <tbody id="dayTableBody">
+              <tr><td colspan="8" class="empty">加载中…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h3>Top 观众</h3>
+          <span class="section-sub">近 7 天</span>
+        </div>
+        <ol class="rank-list" id="topUsers"></ol>
+      </section>
+
+      <section class="card span-3">
+        <div class="card-head">
+          <h3>最近事件流</h3>
+          <span class="section-sub" id="recentCount">最近 0 条</span>
+        </div>
+        <div class="event-stream" id="recentEvents">
+          <div class="empty">暂无事件</div>
+        </div>
+      </section>
+    </div>
+
+    <footer class="footer">
+      数据来自 <code id="dataPath">data/analytics/</code>（events-YYYY-MM-DD.jsonl / metering-YYYY-MM-DD.json），页面每 2 秒自动刷新。
+    </footer>
+  </main>
+
+  <script src="./dashboard.js"></script>
+</body>
+</html>

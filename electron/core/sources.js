@@ -1,5 +1,23 @@
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
+const { spawn, execFile } = require('child_process');
+
+const ROOT = path.join(__dirname, '..', '..');
+const COLLECTOR_CANDIDATES = [
+  path.join(ROOT, 'scripts', 'douyin-collector.js'),                        // dev：仓库根
+  path.join(ROOT, '..', 'app.asar.unpacked', 'scripts', 'douyin-collector.js'), // packaged：asar 解包目录
+  path.join(ROOT, 'app.asar.unpacked', 'scripts', 'douyin-collector.js'),
+];
+
+function resolveCollector() {
+  for (const p of COLLECTOR_CANDIDATES) {
+    try { if (fs.existsSync(p)) return p; } catch (_) { /* ignore */ }
+  }
+  return COLLECTOR_CANDIDATES[0];
+}
+
 const USERS = ['小鱼干', '摸鱼达人', '深海不睡觉', '阿呆', '一勺糖', '夜猫子', '不吃香菜', '风吹麦浪',
   '柠檬精', '会飞的猪', '半杯可乐', '猫头鹰', '早八人', '咸鱼翻身', '云朵', '北岛', '小满', '七七',
   '路过的风', '爱吃桃'];
@@ -135,31 +153,229 @@ class Simulator {
   }
 }
 
+// 抖音真实弹幕源：托管 scripts/douyin-collector.js 子进程（CDP 观察直播页 DOM → POST /ingest）
+class DouyinSource {
+  constructor({ config, logger, onEvent }) {
+    this.config = config;
+    this.logger = logger;
+    this.onEvent = onEvent;
+    this.child = null;
+    this.stopping = false;
+    this.restartTimer = null;
+    this.restarts = 0;
+    this.events = 0;
+    this.lastEventAt = 0;
+    this.lastError = '';
+    this.status = { connected: false, events: 0, room: '' };
+    this._outBuf = '';
+    this._errLines = 0;
+  }
+
+  get roomId() {
+    const raw = String(this.config.douyin?.roomId || '').trim();
+    const m = raw.match(/live\.douyin\.com\/(\d+)/) || raw.match(/^(\d{6,})$/);
+    return m ? m[1] : '';
+  }
+
+  start() {
+    if (this.child || this.restartTimer) return;
+    this.stopping = false;
+    if (!this.config.douyin?.enabled) {
+      this.lastError = 'douyin.enabled=false';
+      this.logger.warn('抖音采集未启用：请在配置里把 douyin.enabled 设为 true');
+      return;
+    }
+    if (!this.roomId) {
+      this.lastError = '未配置抖音房间号';
+      this.logger.warn('抖音采集未启动：缺少 douyin.roomId（直播间地址里的数字 ID）');
+      return;
+    }
+    const collector = resolveCollector();
+    if (!fs.existsSync(collector)) {
+      this.lastError = `找不到采集器 ${collector}`;
+      this.logger.error(this.lastError);
+      return;
+    }
+    const selectors = fs.existsSync(path.join(ROOT, 'scripts', 'douyin-selectors.json'))
+      ? path.join(ROOT, 'scripts', 'douyin-selectors.json')
+      : path.join(path.dirname(collector), 'douyin-selectors.json');
+    const host = this.config.server?.host === '127.0.0.1' ? '127.0.0.1' : (this.config.server?.host || '127.0.0.1');
+    const ingest = `http://${host}:${this.config.server?.port || 17890}`;
+    const token = String(this.config.ingest?.token || '');
+    const args = [
+      collector,
+      '--room', this.roomId,
+      '--ingest', ingest,
+      '--token', token,
+      `--headless=${this.config.douyin.headless === false ? 'false' : 'true'}`,
+      '--selectors', selectors,
+    ];
+    if (this.config.douyin.browserPath) args.push('--browser', String(this.config.douyin.browserPath));
+    this.logger.info(`启动抖音采集器：房间 ${this.roomId}，上报 ${ingest}/ingest`);
+    this.child = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    this._outBuf = '';
+
+    this.child.stdout.on('data', (buf) => {
+      this._outBuf += buf.toString('utf8');
+      let idx;
+      while ((idx = this._outBuf.indexOf('\n')) >= 0) {
+        const line = this._outBuf.slice(0, idx).trim();
+        this._outBuf = this._outBuf.slice(idx + 1);
+        if (line) this._onLine(line);
+      }
+    });
+    this.child.stderr.on('data', (buf) => {
+      const text = buf.toString('utf8').trim();
+      if (!text) return;
+      this._errLines += 1;
+      this.logger.warn(`[douyin] ${text.slice(0, 180)}`);
+    });
+    this.child.on('error', (err) => {
+      this.lastError = err.message;
+      this.logger.error(`抖音采集器启动失败：${err.message}`);
+    });
+    this.child.on('exit', (code, signal) => {
+      this.child = null;
+      this.status.connected = false;
+      this.logger.warn(`抖音采集器退出 code=${code} signal=${signal || '-'}`);
+      if (!this.stopping) {
+        const delay = Math.min(60, Math.max(3, Number(this.config.douyin?.restartDelaySec) || 5));
+        this.restartTimer = setTimeout(() => {
+          this.restartTimer = null;
+          this.restarts += 1;
+          this.logger.info(`重连抖音采集器（第 ${this.restarts} 次）`);
+          this.start();
+        }, delay * 1000);
+      }
+    });
+  }
+
+  _onLine(line) {
+    if (line.startsWith('EVENT ')) {
+      try {
+        const ev = this._normalize(this._parse(line.slice(6)));
+        if (!ev) return;
+        this.events += 1;
+        this.lastEventAt = Date.now();
+        this.status.events = this.events;
+        this.onEvent(ev);
+      } catch (_) { /* ignore bad json */ }
+      return;
+    }
+    if (line.startsWith('STATUS ')) {
+      try {
+        const st = JSON.parse(line.slice(7));
+        this.status = { ...this.status, ...st };
+      } catch (_) { /* ignore */ }
+      return;
+    }
+    if (line.startsWith('ERROR ')) {
+      this.lastError = line.slice(6);
+      this.logger.error(`[douyin] ${this.lastError}`);
+    }
+  }
+
+  _parse(raw) {
+    return JSON.parse(raw);
+  }
+
+  // 平台系统提示（「N 人来了」「欢迎 xx 进入直播间」）会被采集器当成 comment，
+  // 这里统一降级成 enter：只上弹幕墙、不触发回复；纯符号噪声直接丢弃。
+  _normalize(ev) {
+    if (!ev || !ev.type) return null;
+    const text = String(ev.text || '').trim();
+    if (ev.type === 'comment') {
+      if (!text) return null;
+      if (/^\d+\s*人?来了$/.test(text) || /^\d+\s*人?进入(了)?直播间$/.test(text)) {
+        return { ...ev, type: 'enter', text: '' };
+      }
+      if (/^(欢迎.{0,30}(进入|来到)(了)?直播间|.{0,30}加入了?直播间)$/.test(text)) {
+        return { ...ev, type: 'enter', text: '' };
+      }
+      // 兜底：真实礼物的 DOM 结构可能与选择器不匹配，被当成 comment 上报时按文案还原
+      const giftHit = text.match(/(?:送出|赠送|送给主播)\s*了?\s*([^\sx×*]{1,12})(?:\s*[x×*]\s*(\d{1,3}))?/);
+      if (giftHit) {
+        return {
+          ...ev,
+          type: 'gift',
+          giftName: giftHit[1],
+          count: Math.max(1, Number(giftHit[2]) || 1),
+          value: Number(ev.value) || 0,
+          text: '',
+        };
+      }
+      if (!/[\p{L}\p{N}]/u.test(text)) return null;
+    }
+    if (ev.type === 'gift' && !String(ev.giftName || '').trim()) return null;
+    return ev;
+  }
+
+  stop() {
+    this.stopping = true;
+    clearTimeout(this.restartTimer);
+    this.restartTimer = null;
+    this.status.connected = false;
+    if (!this.child) return;
+    const child = this.child;
+    this.child = null;
+    try { child.kill('SIGTERM'); } catch (_) { /* ignore */ }
+    setTimeout(() => {
+      if (child.exitCode !== null || child.killed) return;
+      try {
+        if (process.platform === 'win32') execFile('taskkill', ['/PID', String(child.pid), '/T', '/F'], () => {});
+        else child.kill('SIGKILL');
+      } catch (_) { /* ignore */ }
+    }, 3000).unref?.();
+  }
+
+  snapshot() {
+    return {
+      type: 'douyin',
+      room: this.roomId,
+      connected: Boolean(this.status.connected),
+      events: this.events,
+      lastEventAgoSec: this.lastEventAt ? Math.round((Date.now() - this.lastEventAt) / 1000) : null,
+      restarts: this.restarts,
+      error: this.lastError,
+    };
+  }
+}
+
 class SourceManager {
   constructor({ config, logger, onEvent }) {
     this.config = config;
     this.logger = logger;
     this.simulator = new Simulator({ config, logger, onEvent });
+    this.douyin = new DouyinSource({ config, logger, onEvent });
     this.current = config.source.type || 'simulator';
+    if (!['simulator', 'ingest', 'off', 'douyin'].includes(this.current)) this.current = 'off';
   }
 
   start() {
     if (this.current === 'simulator') this.simulator.start();
+    if (this.current === 'douyin') this.douyin.start();
   }
 
   stop() {
     this.simulator.stop();
+    this.douyin.stop();
   }
 
   setType(type) {
-    const next = ['simulator', 'ingest', 'off'].includes(type) ? type : 'off';
+    const next = ['simulator', 'ingest', 'off', 'douyin'].includes(type) ? type : 'off';
     this.simulator.stop();
+    this.douyin.stop();
     this.current = next;
     if (next === 'simulator') this.simulator.start();
+    if (next === 'douyin') this.douyin.start();
     this.config.source.type = next;
     this.logger.info(`弹幕源切换为 ${next}`);
     return next;
   }
+
+  snapshot() {
+    return this.douyin.snapshot();
+  }
 }
 
-module.exports = { Simulator, SourceManager };
+module.exports = { Simulator, SourceManager, DouyinSource };

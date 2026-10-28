@@ -21,6 +21,12 @@ const ECHO_LINES = {
     '欢迎 {user} 上船，以后就是一条鱼塘里的了。',
     '新朋友 {user} 来啦，快找个舒服的位置躺好。',
   ],
+  enter: [
+    '欢迎 {user} 游进鱼塘，随便坐呀～',
+    '{user} 来啦，快找个舒服的位置躺好。',
+    '哟，{user} 也来摸鱼了，欢迎欢迎。',
+    '欢迎 {user}，今天的鱼塘很热闹呢。',
+  ],
   song: [
     '好嘞，这首《{title}》安排上，耳朵竖起来。',
     '《{title}》来咯，跟着肥鱼一起晃尾巴。',
@@ -55,6 +61,8 @@ function pickEventPrompt(event) {
       return `观众「${user}」送出了「${event.giftName || '礼物'}」×${event.count || 1}。用一句话开心地感谢，提到对方名字，不要提钱。`;
     case 'follow':
       return `观众「${user}」关注了你。用一句话欢迎他。`;
+    case 'enter':
+      return `观众「${user}」进入了你的直播间。用一句话热情地欢迎他，可以带点玩笑，不要提钱。`;
     case 'song':
       if (event.song) return `观众「${user}」点了《${event.song.title}》，现在开始放。用一句话俏皮地开场。`;
       return `观众「${user}」想听《${event.query || ''}》，但曲库里没有。用一句话抱歉地告诉他，并推荐随便点别的。`;
@@ -119,6 +127,7 @@ class Brain {
     if (event.type === 'comment') text = pick(ECHO_LINES.comment, this.lastEcho);
     else if (event.type === 'gift') text = pick(ECHO_LINES.gift, this.lastEcho);
     else if (event.type === 'follow') text = pick(ECHO_LINES.follow, this.lastEcho);
+    else if (event.type === 'enter') text = pick(ECHO_LINES.enter, this.lastEcho);
     else if (event.type === 'song') {
       text = event.song
         ? pick(ECHO_LINES.song, this.lastEcho)

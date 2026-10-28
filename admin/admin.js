@@ -50,7 +50,7 @@ function setPill(el, text, cls = '') {
 
 function render() {
   if (!state) return;
-  const { status, metering, jukebox, songs, logs, watchdog, stageClients, source, config } = state;
+  const { status, metering, jukebox, songs, logs, watchdog, stageClients, source, config, douyin, llm } = state;
 
   if (status) {
     setPill($('pillState'), status.paused ? '已暂停' : ({ idle: '待机', thinking: '思考中', speaking: '说话中', singing: '唱歌中' }[status.state] || status.state), status.paused ? 'warn' : 'good');
@@ -67,8 +67,37 @@ function render() {
   }
 
   setPill($('pillStage'), stageClients > 0 ? '舞台已连接' : '舞台未连接', stageClients > 0 ? 'good' : 'bad');
-  setPill($('pillSource'), source === 'simulator' ? '模拟弹幕' : (source === 'ingest' ? '外部接入' : '已关闭'), source === 'off' ? 'warn' : '');
+  setPill($('pillSource'), source === 'simulator' ? '模拟弹幕' : (source === 'ingest' ? '外部接入' : (source === 'douyin' ? '抖音直播' : '已关闭')), source === 'off' ? 'warn' : '');
   $('sSource').textContent = source;
+
+  const keySrc = llm?.status?.keySource;
+  $('sKey').textContent = keySrc === 'env' ? '.env（已读取）' : (keySrc === 'config' ? 'config.json（建议迁到 .env）' : '未配置');
+  $('sRoom').textContent = douyin?.room || config?.douyin?.roomId || '-';
+
+  // 人工确认模式：展示 AI 草稿，真人点发送才播报
+  const draft = status?.draft;
+  const draftCard = $('draftCard');
+  if (draft) {
+    draftCard.hidden = false;
+    $('draftText').textContent = draft.text;
+    const ev = draft.event || {};
+    $('draftMeta').textContent = `${ev.type || ''} · ${ev.user || ''} · ${new Date(draft.ts || Date.now()).toLocaleTimeString('zh-CN')}`;
+  } else {
+    draftCard.hidden = true;
+    $('draftText').textContent = '';
+    $('draftMeta').textContent = '';
+  }
+
+  if (douyin) {
+    $('dyEvents').textContent = nf.format(douyin.events || 0);
+    $('dyAgo').textContent = douyin.lastEventAgoSec == null ? '-' : `${douyin.lastEventAgoSec}s 前`;
+    const ok = douyin.connected;
+    $('dyStatus').textContent = ok ? '已连接' : (douyin.error ? `未连接 · ${douyin.error}` : '未启动');
+    $('dyStatus').style.color = ok ? '' : '#ffb45c';
+  }
+  if (config && document.activeElement !== $('douyinRoom')) {
+    $('douyinRoom').value = config.douyin?.roomId || '';
+  }
 
   if (!sourceInitialized && source) {
     $('sourceSelect').value = source;
@@ -203,6 +232,26 @@ $('btnRestart').addEventListener('click', async () => {
   } catch (err) { toast(err.message); }
 });
 
+$('btnDraftSend').addEventListener('click', async () => {
+  const draft = state?.status?.draft;
+  if (!draft) { toast('当前没有待确认草稿'); return; }
+  try {
+    await api('/api/speak', { method: 'POST', body: JSON.stringify({ text: draft.text, exact: true, user: '房主（人工确认）' }) });
+    toast('已发送（真人确认播报）');
+    refresh();
+  } catch (err) { toast(err.message); }
+});
+
+$('btnDraftDiscard').addEventListener('click', async () => {
+  const draft = state?.status?.draft;
+  if (!draft) return;
+  try {
+    await api('/api/draft/discard', { method: 'POST', body: JSON.stringify({ id: draft.id }) });
+    toast('已丢弃草稿');
+    refresh();
+  } catch (err) { toast(err.message); }
+});
+
 $('btnSpeak').addEventListener('click', async () => {
   const text = $('speakText').value.trim();
   if (!text) { toast('先输入内容'); return; }
@@ -215,11 +264,33 @@ $('btnSpeak').addEventListener('click', async () => {
 
 $('btnSource').addEventListener('click', async () => {
   const type = $('sourceSelect').value;
+  if (type === 'douyin' && !state?.douyin?.room && !state?.config?.douyin?.roomId) {
+    toast('先在「抖音真实直播」卡片里保存房间号');
+    return;
+  }
   try {
     await api('/api/source', { method: 'POST', body: JSON.stringify({ type }) });
     toast(`弹幕源已切换为 ${type}`);
     refresh();
   } catch (err) { toast(err.message); }
+});
+
+$('btnDouyin').addEventListener('click', async () => {
+  const raw = $('douyinRoom').value.trim();
+  if (!raw) { toast('先填直播间地址或房间号'); return; }
+  const m = raw.match(/(\d{6,})/);
+  if (!m) { toast('没识别出房间号，请粘贴完整直播间地址'); return; }
+  try {
+    await api('/api/config', { method: 'POST', body: JSON.stringify({ douyin: { enabled: true, roomId: m[1] } }) });
+    await api('/api/source', { method: 'POST', body: JSON.stringify({ type: 'douyin' }) });
+    $('douyinMsg').textContent = `已启动采集器：房间 ${m[1]}（首次启动需要几秒，无头浏览器会加载直播间）`;
+    sourceInitialized = false;
+    toast('已保存并连接抖音房间');
+    refresh();
+  } catch (err) {
+    $('douyinMsg').textContent = `失败：${err.message}`;
+    toast(err.message);
+  }
 });
 
 document.querySelectorAll('[data-inject]').forEach((btn) => {

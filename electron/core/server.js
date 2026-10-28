@@ -5,6 +5,9 @@ const fs = require('fs');
 const path = require('path');
 const { WebSocketServer } = require('ws');
 
+const { llmStatus: buildLlmStatus } = require('./config');
+const { listManagedHits } = require('./env');
+
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -130,13 +133,53 @@ function createServer({
   watchdog,
   stageDir,
   adminDir,
+  dashboardDir,
   dataDir,
   getDirector,
+  analytics,
   onRestartStage,
   onFocusStage,
+  getDouyinStatus,
+  getLlmMode,
 }) {
   const stageClients = new Set();
   const api = () => getDirector();
+
+  // 每 30s 把计量快照落盘（不占用 HTTP 线程、不阻止进程退出）。
+  let meteringTimer = null;
+  if (analytics && typeof analytics.recordMetering === 'function'
+    && metering && typeof metering.snapshot === 'function') {
+    meteringTimer = setInterval(() => {
+      try {
+        analytics.recordMetering(metering.snapshot());
+      } catch (err) {
+        try { logger.warn('analytics 计量快照写入失败', { error: err.message }); } catch (_) { /* ignore */ }
+      }
+    }, 30000);
+    if (meteringTimer.unref) meteringTimer.unref();
+  }
+
+  // /api/state 的 LLM 状态：keySource 区分 env / config / none，apiKey 永不回传明文。
+  function readLlmStatus() {
+    let status;
+    try { status = buildLlmStatus(config, configHandle && configHandle.env); }
+    catch (_) { status = buildLlmStatus(config, null); }
+    if (typeof getLlmMode === 'function') {
+      try { status.mode = getLlmMode(); } catch (_) { /* 回退到按 config 推断的 mode */ }
+    }
+    return status;
+  }
+
+  // 抖音采集状态由调用方（main.js / dev-server.js）注入；未接线时不输出该键。
+  function readDouyinStatus() {
+    if (typeof getDouyinStatus !== 'function') return null;
+    try {
+      const snapshot = getDouyinStatus();
+      return snapshot && typeof snapshot === 'object' ? snapshot : null;
+    } catch (_) {
+      return null;
+    }
+  }
 
   function broadcast(msg) {
     if (!stageClients.size) return;
@@ -229,6 +272,7 @@ function createServer({
           sendJson(res, 403, { ok: false, error: 'bad token' });
           return;
         }
+        analytics?.recordEvent?.(body, { source: 'ingest', room: config.douyin?.roomId || '' });
         api()?.push(body);
         sendJson(res, 200, { ok: true });
         return;
@@ -236,6 +280,7 @@ function createServer({
 
       if (pathname === '/api/state' && req.method === 'GET') {
         const d = api();
+        const douyin = readDouyinStatus();
         sendJson(res, 200, {
           ok: true,
           status: d?.getStatus() || null,
@@ -246,8 +291,42 @@ function createServer({
           watchdog: watchdog.status(),
           stageClients: stageClients.size,
           source: sources.current,
+          llm: { status: readLlmStatus() },
+          ...(douyin ? { douyin } : {}),
           config: sanitizeConfig(config),
           now: Date.now(),
+        });
+        return;
+      }
+
+      if (pathname === '/api/stats' && req.method === 'GET') {
+        if (!analytics || typeof analytics.summary !== 'function') {
+          sendJson(res, 200, { ok: false, error: 'analytics disabled' });
+          return;
+        }
+        const days = Math.min(90, Math.max(1, Number(url.searchParams.get('days')) || 7));
+        let summary;
+        try {
+          summary = analytics.summary(days);
+        } catch (err) {
+          logger.warn('读取数据看板统计失败', { error: err.message });
+          sendJson(res, 500, { ok: false, error: err.message });
+          return;
+        }
+        let mode = null;
+        if (typeof getLlmMode === 'function') {
+          try { mode = getLlmMode(); } catch (_) { mode = null; }
+        }
+        if (!mode) mode = config.llm?.apiKey ? 'llm' : 'echo';
+        sendJson(res, 200, {
+          ok: true,
+          ...summary,
+          live: {
+            source: sources.current,
+            room: config.douyin?.roomId || '',
+            stageClients: stageClients.size,
+            mode,
+          },
         });
         return;
       }
@@ -262,13 +341,30 @@ function createServer({
         const body = await readJson(req);
         const text = String(body.text || '').trim();
         if (!text) { sendJson(res, 400, { ok: false, error: 'text 不能为空' }); return; }
-        api()?.say(text, body.user || '房主');
+        // 人工确认模式：exact=true 时直接播 director 已生成好的草稿，不再走 say/LLM 重新生成。
+        if (body.exact === true && typeof api()?.speakExact === 'function') {
+          api().speakExact(text);
+        } else {
+          api()?.say(text, body.user || '房主');
+        }
         sendJson(res, 200, { ok: true });
+        return;
+      }
+
+      // 丢弃人工确认模式下的 AI 草稿；director 不存在时也返回 ok:true，不报 500。
+      if (pathname === '/api/draft/discard' && req.method === 'POST') {
+        const body = await readJson(req);
+        let discarded = false;
+        if (typeof api()?.discardDraft === 'function') {
+          try { discarded = Boolean(api().discardDraft(body.id)); } catch (_) { discarded = false; }
+        }
+        sendJson(res, 200, { ok: true, discarded });
         return;
       }
 
       if (pathname === '/api/event' && req.method === 'POST') {
         const body = await readJson(req);
+        analytics?.recordEvent?.(body, { source: 'test', room: config.douyin?.roomId || '' });
         api()?.push(body);
         sendJson(res, 200, { ok: true });
         return;
@@ -291,9 +387,19 @@ function createServer({
 
       if (pathname === '/api/config' && req.method === 'POST') {
         const patch = stripMasked(await readJson(req));
+        // 由 .env / 进程环境变量托管的字段：内存以 env 为准，也绝不写进 config.json
+        const envHits = listManagedHits(patch, configHandle && configHandle.envOverrides);
         const merged = configHandle.save(patch);
         Object.assign(config, merged);
-        sendJson(res, 200, { ok: true, config: sanitizeConfig(config), note: '端口、窗口尺寸等设置需要重启应用生效' });
+        const envNote = envHits.length
+          ? `；${envHits.map((o) => o.key).join('、')} 由 .env 提供，本次修改未写入 config.json`
+          : '';
+        sendJson(res, 200, {
+          ok: true,
+          config: sanitizeConfig(config),
+          llm: { status: readLlmStatus() },
+          note: `端口、窗口尺寸等设置需要重启应用生效${envNote}`,
+        });
         return;
       }
 
@@ -343,6 +449,10 @@ function createServer({
         serveFile(req, res, stageDir, pathname.replace(/^\/stage\/?/, '') || 'index.html');
         return;
       }
+      if (dashboardDir && (pathname === '/dashboard' || pathname.startsWith('/dashboard/'))) {
+        serveFile(req, res, dashboardDir, pathname.replace(/^\/dashboard\/?/, '') || 'index.html');
+        return;
+      }
       if (pathname.startsWith('/admin')) {
         serveFile(req, res, adminDir, pathname.replace(/^\/admin\/?/, '') || 'index.html');
         return;
@@ -371,6 +481,7 @@ function createServer({
       ws.on('message', (raw) => {
         try {
           const body = JSON.parse(String(raw));
+          analytics?.recordEvent?.(body, { source: 'ingest', room: config.douyin?.roomId || '' });
           api()?.push(body);
         } catch (_) { /* ignore */ }
       });
@@ -378,6 +489,10 @@ function createServer({
   });
 
   function close() {
+    if (meteringTimer) {
+      clearInterval(meteringTimer);
+      meteringTimer = null;
+    }
     for (const res of stageClients) {
       try { res.end(); } catch (_) { /* ignore */ }
     }

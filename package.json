@@ -9,6 +9,7 @@
     "start": "electron .",
     "dev": "electron . --dev",
     "server": "node scripts/dev-server.js",
+    "douyin": "node scripts/douyin-collector.js",
     "smoke": "node scripts/smoke.js",
     "test:http": "node scripts/http-test.js",
     "test": "node scripts/smoke.js && node scripts/http-test.js",
@@ -36,7 +37,15 @@
       "electron/**/*",
       "stage/**/*",
       "admin/**/*",
+      "dashboard/**/*",
+      "build/**/*",
+      "scripts/douyin-collector.js",
+      "scripts/douyin-selectors.json",
       "package.json"
+    ],
+    "asarUnpack": [
+      "scripts/douyin-collector.js",
+      "scripts/douyin-selectors.json"
     ],
     "win": {
       "target": [
