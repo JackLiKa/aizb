@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>鲸鱼娘 3D 模型预览</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: radial-gradient(circle at 50% 38%, #103049 0%, #081725 55%, #040b13 100%); }
+    #preview-canvas { display: block; width: 100vw; height: 100vh; }
+  </style>
+</head>
+<body>
+  <canvas id="preview-canvas"></canvas>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./vendor/three.module.min.js"
+      }
+    }
+  </script>
+  <script type="module">
+    import * as THREE from 'three';
+    import { WhaleGirlRenderer3D } from './whale-girl-3d.js';
+    import { buildWhaleGirl, buildWhaleGirlClips } from './whale-model.js';
+
+    const params = new URLSearchParams(location.search);
+    const renderer = new WhaleGirlRenderer3D(document.getElementById('preview-canvas'), { fps: 30 });
+    renderer.start();
+    renderer.setView(Number(params.get('view') || 0));
+    if (params.get('mode')) renderer.setMode(params.get('mode'));
+    if (params.get('mouth')) renderer.setMouth(Number(params.get('mouth')));
+    window.__preview = renderer;
+
+    if (params.get('clean') === '1') {
+      renderer.backdrop.visible = false;
+      renderer.shadow.visible = false;
+      for (const b of renderer.bubbles) b.mesh.visible = false;
+      for (const t of renderer.thoughts) t.mesh.visible = false;
+      document.body.style.background = `#${params.get('bg') || '00ff00'}`;
+    }
+
+    for (const k of ['hemi', 'key', 'rim', 'fill']) {
+      const v = params.get(k);
+      if (v && renderer.lights[k]) renderer.lights[k].intensity = Number(v);
+    }
+    if (params.get('exp')) renderer.renderer.toneMappingExposure = Number(params.get('exp'));
+
+    if (params.get('export') === '1') {
+      const { GLTFExporter } = await import('./vendor/GLTFExporter.js');
+      const built = buildWhaleGirl();
+      const scene = new THREE.Scene();
+      scene.name = 'WhaleGirlScene';
+      scene.add(built.root);
+      built.root.updateMatrixWorld(true);
+
+      let meshes = 0;
+      const names = [];
+      built.root.traverse((obj) => {
+        if (obj.name) names.push(obj.name);
+        if (obj.isMesh) meshes += 1;
+      });
+
+      const exporter = new GLTFExporter();
+      exporter.parse(scene, (result) => {
+        const blob = new Blob([result], { type: 'model/gltf-binary' });
+        const reader = new FileReader();
+        reader.onload = () => {
+          window.__glbBase64 = String(reader.result).split(',')[1];
+          window.__glbMeta = { meshes, bytes: blob.size, nodes: names.length };
+          window.__glbReady = true;
+        };
+        reader.readAsDataURL(blob);
+      }, (err) => {
+        window.__glbError = String(err);
+      }, { binary: true, animations: buildWhaleGirlClips(built.nodes) });
+    }
+  </script>
+</body>
+</html>

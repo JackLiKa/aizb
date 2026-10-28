@@ -1,0 +1,89 @@
+{
+  "sprite": {
+    "w": 379,
+    "h": 1034,
+    "offset": [
+      12,
+      14
+    ]
+  },
+  "head": {
+    "file": "head.png",
+    "pivot": [
+      204,
+      238
+    ],
+    "seam_y": 230
+  },
+  "body": {
+    "file": "body.png"
+  },
+  "tail": {
+    "y": 760,
+    "amp": 13,
+    "pivot": 180
+  },
+  "eyes": {
+    "left": {
+      "file": "eye-left-closed.png",
+      "box": [
+        140,
+        115,
+        182,
+        149
+      ],
+      "center": [
+        161,
+        132
+      ],
+      "radius": [
+        19.0,
+        14.0
+      ]
+    },
+    "right": {
+      "file": "eye-right-closed.png",
+      "box": [
+        199,
+        97,
+        247,
+        135
+      ],
+      "center": [
+        223,
+        116
+      ],
+      "radius": [
+        22.0,
+        16.0
+      ]
+    }
+  },
+  "mouth": {
+    "open": "mouth-open.png",
+    "closed": "mouth-closed.png",
+    "box": [
+      184,
+      149,
+      215,
+      172
+    ],
+    "pad": 3,
+    "center": [
+      200,
+      160
+    ],
+    "inner": [
+      8,
+      6,
+      29,
+      22
+    ],
+    "stretch": 0.33
+  },
+  "skin": [
+    247.0,
+    210.0,
+    205.0
+  ]
+}

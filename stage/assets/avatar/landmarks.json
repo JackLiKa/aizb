@@ -1,0 +1,151 @@
+{
+  "source": "refs/mature/sheet.png",
+  "sprite": "stage/assets/avatar/fig0.png",
+  "sprite_bbox": [
+    12,
+    14,
+    391,
+    1048
+  ],
+  "sprite_size": [
+    379,
+    1034
+  ],
+  "offset": [
+    12,
+    14
+  ],
+  "view": "front, head tilted -18deg",
+  "head_cut": {
+    "y": 234,
+    "x0": 99,
+    "x1": 330
+  },
+  "face": {
+    "box": [
+      163,
+      110,
+      247,
+      198
+    ],
+    "center": [
+      206,
+      154
+    ],
+    "eye_angle_deg": -14.5
+  },
+  "eyes": {
+    "left": {
+      "center": [
+        173,
+        146
+      ],
+      "radius": [
+        16,
+        11
+      ]
+    },
+    "right": {
+      "center": [
+        235,
+        130
+      ],
+      "radius": [
+        19,
+        13
+      ]
+    }
+  },
+  "mouth": {
+    "box": [
+      196,
+      163,
+      227,
+      186
+    ],
+    "center": [
+      212,
+      174
+    ],
+    "radius": [
+      13,
+      10
+    ]
+  },
+  "chin": [
+    212,
+    194
+  ],
+  "neck": [
+    216,
+    224
+  ],
+  "neck_y": 190,
+  "shoulder_y": 315,
+  "waist_y": 444,
+  "hem_y": 720,
+  "body_bottom": 1048,
+  "local": {
+    "face_box": [
+      151,
+      96,
+      235,
+      184
+    ],
+    "eyes": {
+      "left": {
+        "center": [
+          161,
+          132
+        ],
+        "radius": [
+          16,
+          11
+        ]
+      },
+      "right": {
+        "center": [
+          223,
+          116
+        ],
+        "radius": [
+          19,
+          13
+        ]
+      }
+    },
+    "mouth": {
+      "box": [
+        184,
+        149,
+        215,
+        172
+      ],
+      "center": [
+        200,
+        160
+      ],
+      "radius": [
+        13,
+        10
+      ]
+    },
+    "chin": [
+      200,
+      180
+    ],
+    "neck": [
+      204,
+      210
+    ],
+    "neck_y": 176,
+    "shoulder_y": 301,
+    "waist_y": 430,
+    "hem_y": 706,
+    "head_cut_y": 220,
+    "head_cut_x": [
+      87,
+      318
+    ]
+  }
+}

@@ -1,0 +1,14 @@
+node_modules/
+release/
+dist/
+data/
+.tmp/
+.npm-cache/
+.shots/
+.vm-share/
+.plugins/
+*_files/
+.tmp-model.js
+*.log
+.DS_Store
+Thumbs.db

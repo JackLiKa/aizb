@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>大肥鱼直播 · 控制台</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div>
+        <div class="brand-title">大肥鱼直播</div>
+        <div class="brand-sub">24H 陪伴直播控制台</div>
+      </div>
+    </div>
+    <div class="top-status">
+      <span class="pill" id="pillState">待机</span>
+      <span class="pill" id="pillSource">模拟弹幕</span>
+      <span class="pill" id="pillMode">Echo 模式</span>
+      <span class="pill" id="pillStage">舞台未连接</span>
+    </div>
+    <div class="top-actions">
+      <button class="btn" id="btnOpenStage">打开舞台</button>
+      <button class="btn" id="btnPause">暂停自动回复</button>
+      <button class="btn" id="btnRestart">重启渲染</button>
+    </div>
+  </header>
+
+  <main class="grid">
+    <section class="card span-2">
+      <h2>今日数据</h2>
+      <div class="metrics">
+        <div class="metric">
+          <div class="metric-label">消耗 tokens</div>
+          <div class="metric-value" id="mTokens">0</div>
+          <div class="metric-sub" id="mTokensSub">0 输入 / 0 输出</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">预估花费</div>
+          <div class="metric-value accent" id="mCost">¥0.00</div>
+          <div class="metric-sub" id="mTts">0 字语音</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">礼物</div>
+          <div class="metric-value warm" id="mGifts">0</div>
+          <div class="metric-sub" id="mGiftValue">¥0.0</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">已处理 / 队列</div>
+          <div class="metric-value" id="mHandled">0</div>
+          <div class="metric-sub" id="mQueue">队列 0</div>
+        </div>
+      </div>
+      <div class="meter-note" id="meterNote">尚未产生调用</div>
+    </section>
+
+    <section class="card">
+      <h2>运行状态</h2>
+      <dl class="kv">
+        <dt>运行时长</dt><dd id="sUptime">00:00:00</dd>
+        <dt>当前状态</dt><dd id="sState">待机</dd>
+        <dt>弹幕源</dt><dd id="sSource">simulator</dd>
+        <dt>舞台心跳</dt><dd id="sBeat">-</dd>
+        <dt>1 小时重启</dt><dd id="sRestarts">0</dd>
+        <dt>最近错误</dt><dd id="sErrors">0</dd>
+      </dl>
+    </section>
+
+    <section class="card">
+      <h2>手动说话</h2>
+      <textarea id="speakText" rows="3" placeholder="输入让肥鱼说的话，直接进语音队列…"></textarea>
+      <div class="row">
+        <button class="btn primary" id="btnSpeak">让它说</button>
+        <span class="hint">会打断当前播报，插入到队首</span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>事件注入</h2>
+      <p class="hint">没有接真实直播间时，用这里测试礼物、点歌和弹幕。</p>
+      <div class="row wrap">
+        <button class="btn" data-inject="comment">来条弹幕</button>
+        <button class="btn" data-inject="gift">送个礼物</button>
+        <button class="btn" data-inject="follow">来个关注</button>
+        <button class="btn" data-inject="song">点歌…</button>
+      </div>
+      <div class="row">
+        <select id="sourceSelect" class="select">
+          <option value="simulator">模拟弹幕（自动生成）</option>
+          <option value="ingest">外部接入（/ingest）</option>
+          <option value="off">关闭自动事件</option>
+        </select>
+        <button class="btn" id="btnSource">切换</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>点歌台</h2>
+      <div class="row">
+        <input id="songQuery" class="input" placeholder="搜索曲库…" />
+        <button class="btn" id="btnSkip">切歌</button>
+      </div>
+      <ul id="songResults" class="list"></ul>
+      <div class="now" id="nowPlaying">当前：无</div>
+    </section>
+
+    <section class="card">
+      <h2>接入信息</h2>
+      <p class="hint">把弹幕助手的事件 POST 到这里，鉴权用 <code>x-ingest-token</code>。</p>
+      <pre class="code" id="ingestInfo">加载中…</pre>
+      <p class="hint">同时支持 WebSocket：<code>ws://127.0.0.1:17890/ingest?token=...</code></p>
+    </section>
+
+    <section class="card span-2">
+      <h2>配置</h2>
+      <p class="hint">保存后立即生效的部分：人设、LLM、TTS、行为、夜间模式。端口和窗口尺寸需要重启应用。</p>
+      <textarea id="configText" rows="16" spellcheck="false"></textarea>
+      <div class="row">
+        <button class="btn primary" id="btnSaveConfig">保存配置</button>
+        <button class="btn" id="btnReloadConfig">重新加载</button>
+        <span class="hint" id="configMsg"></span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>日志</h2>
+      <div id="logs" class="logs"></div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+  <script type="module" src="./admin.js"></script>
+</body>
+</html>

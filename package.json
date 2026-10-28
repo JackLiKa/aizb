@@ -1,0 +1,54 @@
+{
+  "name": "dyzb",
+  "productName": "大肥鱼直播",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI 虚拟形象陪伴直播桌面端",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "server": "node scripts/dev-server.js",
+    "smoke": "node scripts/smoke.js",
+    "test:http": "node scripts/http-test.js",
+    "test": "node scripts/smoke.js && node scripts/http-test.js",
+    "shot": "node scripts/shot.js",
+    "export:glb": "node scripts/export-glb.js",
+    "dist": "electron-builder --win nsis portable",
+    "pack": "electron-builder --dir"
+  },
+  "dependencies": {
+    "msedge-tts": "^2.1.1",
+    "three": "^0.180.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "electron": "^45.1.0",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "com.dyzb.fish",
+    "productName": "大肥鱼直播",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*",
+      "stage/**/*",
+      "admin/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "build/icon.ico",
+      "artifactName": "dyzb-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

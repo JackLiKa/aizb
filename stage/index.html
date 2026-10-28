@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>大肥鱼直播</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div id="scene">
+    <canvas id="stage-canvas"></canvas>
+
+    <div id="hud">
+      <div class="top-left">
+        <div class="live-pill"><span class="live-dot"></span>LIVE</div>
+        <div class="room-title" id="roomTitle">肥鱼の深夜鱼塘</div>
+        <div class="ai-badge">AI 虚拟形象 · 本直播间画面与语音由 AI 生成</div>
+      </div>
+
+      <div class="panel token-panel">
+        <div class="panel-title">今日消耗</div>
+        <div class="token-value"><span id="tokenValue">0</span><span class="unit">tokens</span></div>
+        <div class="token-cost" id="tokenCost">¥ 0.00</div>
+        <div class="token-sub" id="tokenCalls">0 次调用 · 0 字语音</div>
+      </div>
+
+      <div class="panel gift-panel">
+        <div class="panel-title">礼物榜</div>
+        <ol id="giftList" class="rank-list"><li class="empty">还没有礼物</li></ol>
+      </div>
+
+      <div class="panel song-panel">
+        <div class="panel-title">点歌队列</div>
+        <div class="now-playing" id="nowPlaying">还没有人点歌</div>
+        <ul id="songQueue" class="song-list"></ul>
+      </div>
+
+      <div id="danmakuLayer"></div>
+
+      <div id="giftBanner" class="gift-banner"></div>
+
+      <div id="subtitle" class="subtitle"></div>
+
+      <div class="bottom-bar">
+        <div class="status-left">
+          <span class="state-dot idle" id="stateDot"></span>
+          <span id="stateText">待机</span>
+          <span class="sep">·</span>
+          <span id="uptime">00:00:00</span>
+        </div>
+        <div class="status-right">
+          <span id="connBadge" class="conn ok">已连接</span>
+        </div>
+      </div>
+
+      <div id="toastLayer"></div>
+    </div>
+  </div>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./vendor/three.module.min.js"
+      }
+    }
+  </script>
+  <script type="module" src="./stage.js"></script>
+</body>
+</html>
