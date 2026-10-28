@@ -138,8 +138,9 @@ const DEFAULTS = {
     maxRestartsPerHour: 6,
   },
   // 合规：抖音要求虚拟人直播由真人驱动/值守，AI 生成内容需显著标识
+  // humanInLoop 默认开启：AI 只出草稿，必须真人在控制台点「发送」才播报
   compliance: {
-    humanInLoop: false,
+    humanInLoop: true,
     aiDisclosure: true,
   },
 };

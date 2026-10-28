@@ -40,6 +40,8 @@ npm start         # 舞台窗口 + 控制台窗口 + 托盘
 
 首次启动生成 `data/config.json`，此时没有 Key，处于 **Echo 模式**：模拟弹幕 + 内置台词 + Edge 语音，能直接看到完整效果。
 
+> **换新环境部署**：`git clone` 后先 `Copy-Item .env.example .env` 并填入 `LLM_API_KEY`（`.env` 不会入库），再 `npm ci`；**默认开启合规模式** `compliance.humanInLoop=true`（AI 仅出草稿，真人在控制台确认后播报），数据看板在 `/dashboard/`。抖音直播相关配置（房间号/弹幕源）在控制台里设置。
+
 只想在浏览器里调页面（不启动 Electron）：
 
 ```bash
