@@ -166,22 +166,31 @@ class Jukebox {
       }
     } catch (_) { /* 未缓存 */ }
     if (!song.streamUrl) throw new Error('缺少音轨地址');
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 30000);
-    try {
-      const res = await fetch(song.streamUrl, { signal: ctrl.signal, headers: { 'user-agent': 'dyzb/0.1' } });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const buf = Buffer.from(await res.arrayBuffer());
-      if (buf.length < 1024) throw new Error('音轨内容为空');
-      const tmp = `${dest}.part`;
-      fs.writeFileSync(tmp, buf);
-      fs.renameSync(tmp, dest);
-      this.pruneCache();
-      this.logger?.info?.(`在线曲目已缓存：${song.title}`, { bytes: buf.length });
-      return { ...song, file: dest, url: `/media/music-cache/${name}` };
-    } finally {
-      clearTimeout(timer);
+    // 单曲常有十几 MB，慢网下 30s 会误杀；给足 2 分钟，失败再重试一次
+    let lastErr = null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 120000);
+      try {
+        const res = await fetch(song.streamUrl, { signal: ctrl.signal, headers: { 'user-agent': 'dyzb/0.1' } });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const buf = Buffer.from(await res.arrayBuffer());
+        if (buf.length < 1024) throw new Error('音轨内容为空');
+        const tmp = `${dest}.part`;
+        fs.writeFileSync(tmp, buf);
+        fs.renameSync(tmp, dest);
+        this.pruneCache();
+        this.logger?.info?.(`在线曲目已缓存：${song.title}`, { bytes: buf.length });
+        return { ...song, file: dest, url: `/media/music-cache/${name}` };
+      } catch (err) {
+        lastErr = err;
+      } finally {
+        clearTimeout(timer);
+        try { fs.unlinkSync(`${dest}.part`); } catch (_) { /* 未写入 */ }
+      }
+      await new Promise((r) => setTimeout(r, 600));
     }
+    throw lastErr;
   }
 
   pruneCache() {
