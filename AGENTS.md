@@ -1,7 +1,7 @@
 # AGENTS.md · 大肥鱼直播（aizb）项目记忆
 
 > 本文件是本工作区的**项目记忆与操作约定**，DSH 会把 `A:\project\aizb\AGENTS.md` 自动注入到该工作区的会话。
-> 最后更新：2026-10-29 18:10（Asia/Shanghai）。已包含：拉取/分析/运行记录、真实直播接入（.env + 抖音采集器）、合规人工确认模式、数据持久化看板、虚拟形象报备素材。
+> 最后更新：2026-10-29 23:30（Asia/Shanghai）。已包含：拉取/分析/运行记录、真实直播接入（.env + 抖音采集器）、合规播报模式、数据持久化看板、动作物理化系统、报备素材与本地打包状态。
 > 事实优先级：本文件 < 代码 < `_analysis/` 下的深度报告（有 file:line 证据）。
 
 ---
@@ -46,6 +46,7 @@ Start-Process node -ArgumentList 'scripts/dev-server.js' -WindowStyle Hidden -Re
 | 推流 | 本应用只出画面+声音；直播伴侣窗口捕获 1280×720/30fps + VB-Cable 音频路由 | 见 `docs/真实直播接入指南.md` |
 | 播报模式 | 默认 `compliance.humanInLoop=false`：AI 直接播报，真人全程值守；改为 `true` 则只生成草稿，控制台点「发送这条」才播报；`POST /api/speak {exact:true}`、`POST /api/draft/discard` | 控制台 `/admin/`；`status.draft` |
 | 数据持久化 + 看板 | `electron/core/analytics.js`：事件逐条落盘 `data/analytics/events-YYYY-MM-DD.jsonl`（排除 source=test）、计量 30s 快照 `metering-*.json`；`GET /api/stats?days=1..90`；`/dashboard/` 看板（零框架，2s 轮询） | `http://127.0.0.1:17890/dashboard/` |
+| 在线曲库（Jamendo/IA） | `core/music-providers.js`，`JAMENDO_CLIENT_ID` 从 `.env` 读取（**Client Secret 不需要也不保存**）；`jukebox.provider=auto/local/jamendo/archive`，只放行 CC BY/BY-SA/CC0/公版 | 控制台点歌台「在线」；`/api/songs?q=` |
 
 实测结论：真实房间（如 `171498223751`、`805625782512`）可抓到 comment/enter/like；礼物真实 DOM 未在真房间确认（测试窗口无人送礼），采集器 mock 已验证礼物解析，主进程侧另有「送出/赠送 xxx ×N」文案兜底；未登录时昵称被平台脱敏；平台改版只改 `scripts/douyin-selectors.json`。
 
@@ -106,7 +107,9 @@ npm run server       # 仅本地服务：http://127.0.0.1:17890/stage/ 与 /admi
 npm test             # smoke(18 断言) + http-test(29 断言)，零外网，Echo 模式；本机实测通过
 npm run douyin -- --room <房间号> --ingest http://127.0.0.1:17890 --token <ingestToken>   # 单独跑真实弹幕采集器
 npm run pack         # electron-builder --dir → release/win-unpacked（实测成功，383 MB）
-npm run dist         # NSIS + portable（artifactName 已拆分；macOS 上打 win 包见 §10 2026-10-29）
+npm run dist         # NSIS + portable（Windows 上 NSIS 可能失败：生成安装器进程退出码 2；portable 正常）
+npx electron-builder --win portable                                   # Windows 推荐：release/dyzb-<ver>-x64-portable.exe
+npx electron-builder --win portable --config electron-builder.dashboard.yml  # 后台看板：release-dashboard/dyzb-<ver>-x64-dashboard.exe
 ```
 
 **密钥**：编辑仓库根 `.env`（`LLM_API_KEY` 等，模板 `.env.example`），改完**重启服务**生效；`.env` 已 gitignore。控制台「配置」面板不再用于改 Key（env 托管字段会被服务端丢弃并在 note 里提示）。验证：`/api/state.llm.status.keySource` 应为 `env`，`mode` 为 `llm`。
@@ -154,6 +157,7 @@ npm run dist         # NSIS + portable（artifactName 已拆分；macOS 上打 w
 - 合规：抖音对无人直播有治理规则，AI 生成内容需显著标识（舞台左上角已有）；BGM 需授权；仓库无 LICENSE。
 
 ## 10. 变更日志
+- 2026-10-29（晚上·本地更新）：① 拉取远端 15 个提交（`0a4e75c`）并对齐本地配置：`source.type=ingest`、`compliance.humanInLoop=false`（AI 直接播报+真人值守）；② `.env` 增加 `JAMENDO_CLIENT_ID`（在线曲库验证：`q=lofi` 返回 CC BY-SA 曲目，secret 不需要不保存）；③ 清理仓库：删除根目录重复的 `whale-girl-3d.js`、把 `.shots/motion4` 15 个 mp4 移出版本库（提交 `578f5f2`）；④ **动作系统物理化**：新增 `stage/motion-profiles.js`（呼吸/重心转移/眨眼/待机/鞠躬/摇头/弹跳的弹簧阻尼曲线 + 预备-回收 + 次级运动），三层渲染器接入，提交 `ff224ee`，设计文档 `docs/动作设计.md`；⑤ Windows 重新打包：`release/dyzb-0.1.0-x64-portable.exe`（113 MB）与 `release-dashboard/dyzb-0.1.0-x64-dashboard.exe`（105 MB），asar 内 stage 文件与工作区 sha256 逐字节一致；NSIS 安装包在 Windows 上构建失败（生成安装器进程退出码 2，未解决，portable 可用）；⑥ 参考 `ai-pose-gallery.anhao.app`：静态姿势图片库（288 组/1439 张多角度图，图片版权归原作者、不可商用），非骨骼/动作数据，未采用素材；动作改为自研物理模型。OpenDesign 本机不可用（无 daemon/未登录）。
 - 2026-10-28（下午）：拉取仓库（修复工作区 ACL 后克隆）→ 依赖安装 → 三路并行深度分析（stage / core / toolchain）→ 实测（测试、起服务、三层渲染器截图、GLB 解析、打包）→ 本机运行（浏览器模式）+ Electron 环境问题定位 → 初版本文件。
 - 2026-10-28（晚上）：**真实直播接入**。新增 `.env` 密钥体系（`electron/core/env.js`、config 两层模型、`llm.status`、`POST /api/config` 不落盘 env 值）；新增抖音真实弹幕/礼物采集器（`scripts/douyin-collector.js` ~1.6k 行 + `selectors.json`）与主进程托管（`DouyinSource`，自动重启、系统消息过滤、礼物文案兜底）；控制台新增「抖音真实直播」卡片与 `.env` 状态；新增 `docs/真实直播接入指南.md`、`npm run douyin`；TTS 单价按真实值设为 0。实测：真实房间抓到 comment/enter/like，E2E 60s 26 事件、导演处理 6 条并播报；`.env` 假 Key 测试 → keySource=env / mode=llm / config.json 无泄漏；`npm test` 通过。
 - 2026-10-29：**形象待机动作 + Windows 便携版 + 在线曲库**。① `stage/whale-girl-layered.js` 待机随机动作（张望/歪头/点头/哼歌/轻颤/连眨），`mode!=='idle'` 自动让位；② `package.json` artifactName 按 target 拆分，macOS 上离线打包成功（`-c.electronDist=` 解压好的 electron，`HOME`/`ELECTRON_BUILDER_CACHE` 指到工作区避开 EPERM），产物 `release/dyzb-0.1.0-x64-portable.exe`；③ 新增 `core/music-providers.js` + `jukebox` 在线搜索/缓存：Jamendo（`JAMENDO_CLIENT_ID`）+ Internet Archive，`commercialOnly` 只放行 CC BY/BY-SA/CC0/公版，播放前缓存到 `data/music-cache/`，`/api/songs` 支持在线、控制台点歌台「在线」按钮；④ 测试配置改为 `jukebox.provider='local'` 保持零外网。已提交 `ad3f363`/`ba66023` 并推送；Jamendo client_id 已配置在本地 `.env`（不入库），Windows 端用 ISO 里的 `setup-jamendo.cmd` 写入 `%APPDATA%\大肥鱼直播\.env`；Jamendo 候选窗口放大到最少 80 条并对偶发空结果重试一次。重新打包 `release/dyzb-0.1.0-x64-portable.exe`（asar 含 `music-providers.js`），新 ISO `.vm-share/update-ba66023.iso` 已挂到 VM 光驱 `SATA-1-0`（含源码包 `aizb-ba66023.zip`）。⑤ 按抖音客服口径调整播报模式：`compliance.humanInLoop` 默认改为 `false`（AI 直接播报 + 真人全程值守），需要逐条确认再改回 `true`；ISO 增加 `enable-autospeak.cmd` 用于把已保存的配置改回自动播报。
