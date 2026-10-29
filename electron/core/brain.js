@@ -95,21 +95,27 @@ class Brain {
     const now = new Date();
     const time = `${now.getHours()}:${String(now.getMinutes()).padStart(2, '0')}`;
     const lines = [this.config.persona.system, '', `现在是 ${time}。`];
+    if (this.config.llm?.shortReplies !== false) lines.push('回复要短：一句话（不超过 30 字），口语化，直接回答，不要铺垫。');
     if (stateHint) lines.push(stateHint);
     lines.push('只输出你要说的话本身，不要加引号、动作描写或解释。');
     return lines.join('\n');
   }
 
-  _messages(event, history, stateHint) {
+  _messages(event, history, stateHint, userHistory) {
     const msgs = [{ role: 'system', content: this._systemPrompt(stateHint) }];
-    const keep = Math.max(0, (this.config.llm.historyTurns || 8) * 2);
+    // 该观众的短期记忆优先（避免记了这句忘了上一句）
+    if (Array.isArray(userHistory) && userHistory.length) {
+      const ukeep = Math.max(2, (this.config.behavior?.userMemoryTurns || 3) * 2);
+      for (const m of userHistory.slice(-ukeep)) msgs.push({ role: m.role, content: m.content });
+    }
+    const keep = Math.max(0, (this.config.llm.historyTurns || 4) * 2);
     for (const m of history.slice(-keep)) msgs.push({ role: m.role, content: m.content });
     msgs.push({ role: 'user', content: pickEventPrompt(event) });
     return msgs;
   }
 
-  async *stream({ event, history = [], signal, maxTokens, stateHint, onUsage }) {
-    const messages = this._messages(event, history, stateHint);
+  async *stream({ event, history = [], userHistory, signal, maxTokens, stateHint, onUsage }) {
+    const messages = this._messages(event, history, stateHint, userHistory);
     const limit = maxTokens || this.config.llm.maxTokens;
     if (!this.live) {
       yield* this._echo(event, signal, onUsage, messages);

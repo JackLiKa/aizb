@@ -145,6 +145,23 @@ function createServer({
   const stageClients = new Set();
   const api = () => getDirector();
 
+  // 事件级去重：采集器重连/页面重渲染会重发同一条事件，10 分钟内同 key 只处理一次，
+  // 避免看板重复计数、重复欢迎、重复回答、重复弹幕。
+  const recentIngest = new Map();
+  function isDuplicateIngest(body) {
+    if (!body || typeof body !== 'object') return false;
+    const norm = (s) => String(s == null ? '' : s).replace(/\s+/g, '');
+    const key = `${norm(body.type)}|${norm(body.user)}|${norm(body.text)}|${norm(body.giftName)}|${norm(body.count)}`;
+    const now = Date.now();
+    const last = recentIngest.get(key) || 0;
+    if (now - last < 600000) return true;
+    recentIngest.set(key, now);
+    if (recentIngest.size > 2000) {
+      for (const [k, t] of recentIngest) if (now - t > 1200000) recentIngest.delete(k);
+    }
+    return false;
+  }
+
   // 每 30s 把计量快照落盘（不占用 HTTP 线程、不阻止进程退出）。
   let meteringTimer = null;
   if (analytics && typeof analytics.recordMetering === 'function'
@@ -272,6 +289,10 @@ function createServer({
           sendJson(res, 403, { ok: false, error: 'bad token' });
           return;
         }
+        if (isDuplicateIngest(body)) {
+          sendJson(res, 200, { ok: true, duplicate: true });
+          return;
+        }
         analytics?.recordEvent?.(body, { source: 'ingest', room: config.douyin?.roomId || '' });
         api()?.push(body);
         sendJson(res, 200, { ok: true });
@@ -365,6 +386,10 @@ function createServer({
 
       if (pathname === '/api/event' && req.method === 'POST') {
         const body = await readJson(req);
+        if (isDuplicateIngest(body)) {
+          sendJson(res, 200, { ok: true, duplicate: true });
+          return;
+        }
         analytics?.recordEvent?.(body, { source: 'test', room: config.douyin?.roomId || '' });
         api()?.push(body);
         sendJson(res, 200, { ok: true });
@@ -506,6 +531,7 @@ function createServer({
       ws.on('message', (raw) => {
         try {
           const body = JSON.parse(String(raw));
+          if (isDuplicateIngest(body)) return;
           analytics?.recordEvent?.(body, { source: 'ingest', room: config.douyin?.roomId || '' });
           api()?.push(body);
         } catch (_) { /* ignore */ }

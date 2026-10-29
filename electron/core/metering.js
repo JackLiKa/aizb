@@ -25,6 +25,7 @@ class Metering {
     if (!this.state.totals) this.state.totals = emptyCounters();
     if (!this.state.daily) this.state.daily = {};
     if (!this.state.gifts) this.state.gifts = {};
+    if (!Array.isArray(this.state.giftLog)) this.state.giftLog = [];
     this._prune();
   }
 
@@ -38,6 +39,8 @@ class Metering {
     const keep = this.config.metering?.dailyRetainDays || 30;
     const days = Object.keys(this.state.daily).sort();
     while (days.length > keep) delete this.state.daily[days.shift()];
+    const cutoff = Date.now() - 24 * 3600e3;
+    this.state.giftLog = (this.state.giftLog || []).filter((g) => g && g.ts >= cutoff);
   }
 
   _bump(fn) {
@@ -81,7 +84,38 @@ class Metering {
     cur.lastGift = String(giftName || '').slice(0, 24);
     cur.updatedAt = Date.now();
     this.state.gifts[name] = cur;
+    // 24 小时滚动明细：用于贡献榜（按用户聚合）
+    this.state.giftLog.push({ user: name, giftName: cur.lastGift, count: total, value: amount * total, ts: Date.now() });
+    this._prune();
     this.store.set('metering', this.state);
+  }
+
+  // 最近 24h 贡献榜（按价值排序，返回前 n 名）
+  giftRank24h(n = 5) {
+    const cutoff = Date.now() - 24 * 3600e3;
+    const byUser = new Map();
+    for (const g of this.state.giftLog) {
+      if (!g || g.ts < cutoff) continue;
+      const cur = byUser.get(g.user) || { name: g.user, count: 0, value: 0, lastGift: '', updatedAt: 0 };
+      cur.count += g.count || 0;
+      cur.value += g.value || 0;
+      cur.lastGift = g.giftName || cur.lastGift;
+      cur.updatedAt = Math.max(cur.updatedAt, g.ts || 0);
+      byUser.set(g.user, cur);
+    }
+    return [...byUser.values()].sort((a, b) => b.value - a.value || b.count - a.count).slice(0, n);
+  }
+
+  giftTotals24h() {
+    const cutoff = Date.now() - 24 * 3600e3;
+    let count = 0;
+    let value = 0;
+    for (const g of this.state.giftLog) {
+      if (!g || g.ts < cutoff) continue;
+      count += g.count || 0;
+      value += g.value || 0;
+    }
+    return { count, value };
   }
 
   _cost(c) {
@@ -118,6 +152,8 @@ class Metering {
         cost: this._cost(t),
       },
       topGifts: this.topGifts(5),
+      gifts24h: this.giftRank24h(5),
+      gift24h: this.giftTotals24h(),
     };
   }
 }

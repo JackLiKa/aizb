@@ -115,10 +115,22 @@ function applyState(state) {
   else if (state === 'idle') avatar.setMode(musicPlaying ? 'singing' : 'idle');
 }
 
+const recentDanmaku = new Map();
 function addDanmaku(ev) {
   if (!ev || ev.type === 'like' || ev.type === 'enter') return;
+  // 同一条事件（采集器重连/重复推送）60s 内只显示一次，避免弹幕重复刷屏
+  const key = `${ev.user || ''}|${ev.type}|${ev.text || ''}|${ev.giftName || ''}`;
+  const now = Date.now();
+  const last = recentDanmaku.get(key) || 0;
+  if (now - last < 60000) return;
+  recentDanmaku.set(key, now);
+  if (recentDanmaku.size > 200) {
+    for (const [k, t] of recentDanmaku) if (now - t > 120000) recentDanmaku.delete(k);
+  }
+
   const layer = $('danmakuLayer');
-  if (layer.childElementCount > 38) layer.firstElementChild?.remove();
+  // 屏幕上最多同时保留 12 条
+  while (layer.childElementCount >= 12) layer.firstElementChild?.remove();
 
   let text = ev.text || '';
   if (ev.type === 'gift') text = `送出 ${ev.giftName} ×${ev.count || 1}`;
@@ -191,16 +203,17 @@ function updateOverlay(data) {
     $('tokenCalls').textContent = `${metering.today.calls} 次调用 · ${nf.format(metering.today.ttsChars)} 字语音`;
   }
 
-  if (metering?.topGifts) {
+  if (metering?.topGifts || metering?.gifts24h) {
     const list = $('giftList');
+    const gifts = (metering.gifts24h && metering.gifts24h.length ? metering.gifts24h : metering.topGifts) || [];
     list.innerHTML = '';
-    if (!metering.topGifts.length) {
+    if (!gifts.length) {
       const li = document.createElement('li');
       li.className = 'empty';
       li.textContent = '还没有礼物';
       list.appendChild(li);
     } else {
-      metering.topGifts.slice(0, 5).forEach((g, i) => {
+      gifts.slice(0, 5).forEach((g, i) => {
         const li = document.createElement('li');
         const left = document.createElement('span');
         left.className = 'name';
@@ -214,6 +227,13 @@ function updateOverlay(data) {
         li.append(left, val);
         list.appendChild(li);
       });
+    }
+    if (metering.gift24h) {
+      const li = document.createElement('li');
+      li.className = 'empty';
+      li.style.marginTop = '4px';
+      li.textContent = `24h 共 ${metering.gift24h.count || 0} 个 · ${metering.currency || '¥'}${(metering.gift24h.value || 0).toFixed(1)}`;
+      list.appendChild(li);
     }
   }
 

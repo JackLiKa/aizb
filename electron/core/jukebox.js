@@ -95,6 +95,27 @@ class Jukebox {
     return this.search(query, 1)[0] || null;
   }
 
+  // 在「已记住的曲目」（后台搜索/点过的在线歌、队列里的歌）里按标题/歌手模糊匹配，
+  // 让观众弹幕点歌也能点到后台手工指定的歌。
+  searchRemembered(query, limit = 1) {
+    const q = normalize(query);
+    if (!q) return [];
+    const scored = [];
+    for (const song of this.remote.values()) {
+      const t = normalize(song.title);
+      const a = normalize(song.artist);
+      let score = 0;
+      if (t === q) score = 100;
+      else if (t.startsWith(q)) score = 85;
+      else if (t.includes(q)) score = 70;
+      else if (q.includes(t) && t.length >= 2) score = 60;
+      else if (a && (a.includes(q) || q.includes(a))) score = 45;
+      if (score > 0) scored.push({ song, score });
+    }
+    scored.sort((x, y) => y.score - x.score);
+    return scored.slice(0, limit).map((x) => x.song);
+  }
+
   find(id) {
     return this.index.find((s) => s.id === id) || this.remote.get(id) || null;
   }
@@ -147,6 +168,9 @@ class Jukebox {
   async bestAsync(query) {
     const local = this.best(query);
     if (local) return local;
+    // 粉丝点后台已搜索/指定过的歌：先从已记住曲目里找
+    const remembered = this.searchRemembered(query, 1)[0];
+    if (remembered) return remembered;
     try {
       return (await this.searchOnline(query, 1))[0] || null;
     } catch (err) {

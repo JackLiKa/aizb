@@ -33,6 +33,9 @@ class Director {
     this.enterCooldown = new Map();
     this.songCooldown = new Map();
     this.recentTexts = new Map();
+    this.seenKeys = new Map();
+    this.giftBatches = new Map();
+    this.userMemory = new Map();
     this.pendingUtterances = new Map();
     this.current = null;
     this.currentState = 'idle';
@@ -67,12 +70,47 @@ class Director {
   push(raw) {
     const ev = this._normalize(raw);
     if (!ev) return;
+
+    // 全局去重：采集器重连/页面重渲染会把同一条事件再发一遍，这里按
+    // 「类型+用户+内容」在去重窗口（默认 600s，进场按欢迎冷却）内只处理一次。
+    if (this._isDuplicate(ev)) return;
+
     if (ev.type !== 'manual') this.send({ type: 'feed', event: this._publicEvent(ev) });
 
     if (ev.type === 'like') return;
     if (ev.type === 'enter' && this.config.behavior?.welcomeEnabled === false) return;
     if (!this._accept(ev)) return;
 
+    // 礼物：先按用户合并成一个批次，几秒内多份礼物只致谢一次
+    if (ev.type === 'gift') {
+      this._batchGift(ev);
+      return;
+    }
+    this._enqueue(ev);
+  }
+
+  _isDuplicate(ev) {
+    const now = Date.now();
+    const norm = (s) => String(s || '').replace(/\s+/g, '').slice(0, 80);
+    let key;
+    if (ev.type === 'manual') return false;
+    if (ev.type === 'enter') key = `enter|${norm(ev.user)}`;
+    else if (ev.type === 'gift') key = `gift|${norm(ev.user)}|${norm(ev.giftName)}|${ev.count}`;
+    else key = `${ev.type}|${norm(ev.user)}|${norm(ev.text || ev.query || '')}`;
+    const ttl = (ev.type === 'enter'
+      ? (this.config.behavior.welcomeCooldownSec ?? 21600)
+      : (this.config.behavior.dedupeWindowSec ?? 600)) * 1000;
+    const last = this.seenKeys.get(key) || 0;
+    if (now - last < ttl) return true;
+    this.seenKeys.set(key, now);
+    if (this.seenKeys.size > 3000) {
+      const cutoff = now - Math.max(ttl * 2, 3600000);
+      for (const [k, t] of this.seenKeys) if (t < cutoff) this.seenKeys.delete(k);
+    }
+    return false;
+  }
+
+  _enqueue(ev) {
     const task = { ev, priority: PRIORITY[ev.type] || 20, seq: ++this.taskSeq };
     let idx = this.queue.findIndex((x) => x.priority < task.priority);
     if (idx < 0) this.queue.push(task);
@@ -92,6 +130,48 @@ class Director {
     this._schedule(60);
   }
 
+  _batchGift(ev) {
+    const user = ev.user;
+    const now = Date.now();
+    let b = this.giftBatches.get(user);
+    if (!b) {
+      b = { user, names: new Map(), count: 0, value: 0, first: now, timer: null };
+      this.giftBatches.set(user, b);
+    }
+    b.count += ev.count;
+    b.value += ev.value * ev.count;
+    const name = ev.giftName || '礼物';
+    b.names.set(name, (b.names.get(name) || 0) + ev.count);
+    const win = this.config.behavior.giftBatchWindowMs ?? 3000;
+    if (win <= 0) { this._flushGift(user); return; }
+    if (!b.timer) {
+      b.timer = setTimeout(() => this._flushGift(user), win);
+      if (b.timer.unref) b.timer.unref();
+    }
+  }
+
+  _flushGift(user) {
+    const b = this.giftBatches.get(user);
+    if (!b) return;
+    if (b.timer) clearTimeout(b.timer);
+    this.giftBatches.delete(user);
+    const names = [...b.names.entries()];
+    const first = names[0] ? names[0][0] : '礼物';
+    const giftName = names.length > 1 ? `${first}等${names.length}种礼物` : first;
+    const perUnit = b.count > 0 ? b.value / b.count : 0;
+    this._enqueue({
+      id: `g${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`,
+      type: 'gift',
+      user,
+      text: '',
+      giftName,
+      count: b.count,
+      value: Number(perUnit.toFixed(4)),
+      batch: names.slice(0, 5).map(([n, c]) => ({ name: n, count: c })),
+      ts: Date.now(),
+    });
+  }
+
   say(text, user = '房主') {
     this.push({ type: 'manual', user, text: String(text || '').slice(0, 120) });
   }
@@ -102,7 +182,7 @@ class Director {
     const ev = {
       id: raw.id || `e${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
       type,
-      user: String(raw.user || raw.nickname || raw.uname || '匿名观众').slice(0, 24),
+      user: String(raw.user || raw.nickname || raw.uname || '匿名观众').trim().slice(0, 24),
       text: String(raw.text || raw.content || raw.msg || '').slice(0, 200).trim(),
       giftName: raw.giftName || raw.gift || raw.gift_name || '',
       count: Math.max(1, Number(raw.count || raw.num || raw.repeat_count) || 1),
@@ -140,38 +220,27 @@ class Director {
     const now = Date.now();
     if (this.paused && ev.type !== 'manual' && ev.type !== 'gift') return false;
 
-    // 进场欢迎：每个观众默认 10 分钟内只欢迎一次，避免刷屏
-    if (ev.type === 'enter') {
-      if (this.config.behavior?.welcomeEnabled === false) return false;
-      const lastEnter = this.enterCooldown.get(ev.user) || 0;
-      if (now - lastEnter < (this.config.behavior.welcomeCooldownSec || 600) * 1000) return false;
+    // 进场欢迎：每个观众一场直播只欢迎一次（默认 6 小时），重复进场/关注不再欢迎
+    if (ev.type === 'enter' || ev.type === 'follow') {
+      if (ev.type === 'enter' && this.config.behavior?.welcomeEnabled === false) return false;
+      const cd = (this.config.behavior.welcomeCooldownSec ?? 21600) * 1000;
+      const lastWelcome = this.enterCooldown.get(ev.user) || 0;
+      if (now - lastWelcome < cd) return false;
       this.enterCooldown.set(ev.user, now);
-      if (this.enterCooldown.size > 500) {
-        for (const [k, t] of this.enterCooldown) if (now - t > 3600000) this.enterCooldown.delete(k);
+      if (this.enterCooldown.size > 800) {
+        for (const [k, t] of this.enterCooldown) if (now - t > cd) this.enterCooldown.delete(k);
       }
       return true;
     }
 
-    if (ev.type === 'comment' || ev.type === 'follow') {
+    if (ev.type === 'comment') {
       const last = this.userCooldown.get(ev.user) || 0;
-      if (now - last < (this.config.behavior.userCooldownSec || 25) * 1000) return false;
-
-      if (ev.type === 'comment') {
-        if (ev.text.length < 1) return false;
-        const key = `${ev.user}|${ev.text}`;
-        const seen = this.recentTexts.get(key) || 0;
-        if (now - seen < (this.config.behavior.dedupeWindowSec || 60) * 1000) return false;
-        this.recentTexts.set(key, now);
-        if (this.recentTexts.size > 500) {
-          for (const [k, t] of this.recentTexts) if (now - t > 300000) this.recentTexts.delete(k);
-        }
-        const night = this._isNight();
-        const ask = /[?？]|吗|怎么|为什么|啥|什么|能不能|可不可以|在不在/.test(ev.text);
-        const p = ask ? 1 : (night ? (this.config.night.replyProbability ?? 0.08) : (this.config.behavior.replyProbability ?? 0.5));
-        if (Math.random() > p) return false;
-      } else if (Math.random() > 0.6) {
-        return false;
-      }
+      if (now - last < (this.config.behavior.userCooldownSec ?? 8) * 1000) return false;
+      if (ev.text.length < 1) return false;
+      const night = this._isNight();
+      const ask = /[?？]|吗|怎么|为什么|啥|什么|能不能|可不可以|在不在/.test(ev.text);
+      const p = ask ? 1 : (night ? (this.config.night.replyProbability ?? 0.3) : (this.config.behavior.replyProbability ?? 0.9));
+      if (Math.random() > p) return false;
       this.userCooldown.set(ev.user, now);
       return true;
     }
@@ -290,6 +359,7 @@ class Director {
     const gen = this.brain.stream({
       event: ev,
       history: this.history,
+      userHistory: this._userHistory(ev.user),
       signal: controller.signal,
       maxTokens,
       stateHint: this._stateHint(),
@@ -320,8 +390,33 @@ class Director {
     }
     this.history.push({ role: 'user', content: this._historyLine(ev) });
     this.history.push({ role: 'assistant', content: reply || '……' });
-    const keep = Math.max(2, (this.config.llm.historyTurns || 8) * 2);
+    const keep = Math.max(2, (this.config.llm.historyTurns || 4) * 2);
     if (this.history.length > keep) this.history.splice(0, this.history.length - keep);
+    this._rememberUser(ev, reply);
+  }
+
+  // 每个观众的短期上下文（只保留最近 N 轮对话），避免记了这句忘了上一句
+  _userHistory(user) {
+    const m = this.userMemory.get(user);
+    return m ? m.msgs.slice() : [];
+  }
+
+  _rememberUser(ev, reply) {
+    if (!ev.user) return;
+    if (!['comment', 'follow', 'song', 'manual'].includes(ev.type)) return;
+    let m = this.userMemory.get(ev.user);
+    if (!m) { m = { ts: 0, msgs: [] }; this.userMemory.set(ev.user, m); }
+    m.msgs.push(
+      { role: 'user', content: this._historyLine(ev) },
+      { role: 'assistant', content: reply || '……' },
+    );
+    const keep = Math.max(2, (this.config.behavior.userMemoryTurns ?? 3) * 2);
+    if (m.msgs.length > keep) m.msgs.splice(0, m.msgs.length - keep);
+    m.ts = Date.now();
+    if (this.userMemory.size > 300) {
+      const cutoff = Date.now() - 2 * 3600e3;
+      for (const [k, v] of this.userMemory) if (v.ts < cutoff) this.userMemory.delete(k);
+    }
   }
 
   // ---------- 人工确认（合规） ----------
@@ -372,11 +467,13 @@ class Director {
 
   async _speak(gen, signal) {
     const utteranceId = `u${++this.utteranceSeq}`;
-    const maxChars = this.config.behavior.sentenceMaxChars || 40;
+    const maxChars = this.config.behavior.sentenceMaxChars ?? 24;
     let buf = '';
     let full = '';
     let seq = 0;
     const pending = [];
+    let draining = null;
+    let drainErr = null;
 
     const sendClip = (clip) => {
       if (signal.aborted) throw abortError();
@@ -396,6 +493,27 @@ class Director {
       })());
     };
 
+    // 边生成边播：第一句合成完就立刻发出去，不等整段 LLM 输出结束
+    const drain = () => {
+      if (draining) return draining;
+      draining = (async () => {
+        try {
+          while (pending.length) {
+            const clip = await pending[0];
+            pending.shift();
+            if (signal.aborted) throw abortError();
+            sendClip(clip);
+          }
+        } catch (err) {
+          drainErr = err;
+          throw err;
+        } finally {
+          draining = null;
+        }
+      })();
+      return draining;
+    };
+
     for await (const delta of gen) {
       if (signal.aborted) throw abortError();
       full += delta;
@@ -409,11 +527,16 @@ class Director {
         queueSentence(buf.slice(0, maxChars));
         buf = buf.slice(maxChars);
       }
-      while (pending.length > 2) sendClip(await pending.shift());
+      if (pending.length && !draining) drain().catch(() => { /* 错误在下面统一抛出 */ });
     }
 
     if (buf.trim()) queueSentence(buf);
-    while (pending.length) sendClip(await pending.shift());
+    if (draining) await draining.catch(() => {});
+    if (drainErr) throw drainErr;
+    while (pending.length) {
+      await drain();
+      if (drainErr) throw drainErr;
+    }
 
     if (seq === 0) return '';
 

@@ -22,7 +22,7 @@ async function main() {
   const config = deepMerge(DEFAULTS, {
     llm: { apiKey: '', echoDelayMs: 0 },
     tts: { provider: 'none' },
-    behavior: { replyProbability: 1, userCooldownSec: 0, dedupeWindowSec: 0, minIntervalSec: 0 },
+    behavior: { replyProbability: 1, userCooldownSec: 0, dedupeWindowSec: 0, minIntervalSec: 0, giftBatchWindowMs: 0 },
     night: { enabled: false },
     compliance: { humanInLoop: false },
     jukebox: { dir: 'music', perUserCooldownSec: 0, provider: 'local' },
