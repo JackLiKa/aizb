@@ -128,9 +128,11 @@
     <section class="card">
       <h2>点歌台</h2>
       <div class="row">
-        <input id="songQuery" class="input" placeholder="搜索曲库…" />
+        <input id="songQuery" class="input" placeholder="搜索曲库 / 在线音乐，回车或点「在线」…" />
+        <button class="btn" id="btnSongOnline">在线</button>
         <button class="btn" id="btnSkip">切歌</button>
       </div>
+      <p class="hint">在线源：Jamendo（需 JAMENDO_CLIENT_ID）+ Internet Archive；仅列可商用许可，播放前自动缓存到本机。</p>
       <ul id="songResults" class="list"></ul>
       <div class="now" id="nowPlaying">当前：无</div>
     </section>

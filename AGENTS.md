@@ -78,7 +78,8 @@ Start-Process node -ArgumentList 'scripts/dev-server.js' -WindowStyle Hidden -Re
 | `core/brain.js` | OpenAI 兼容流式（`stream_options` 400 自动重试）、Echo 模式、token 估算 |
 | `core/voice.js` | msedge-tts / OpenAI TTS、sha1 缓存、信号量 3、启动清理 400 文件/7 天 |
 | `core/server.js` | HTTP/SSE/WS 路由、Range 静态服务、/api/state 打码、`/api/config` 热更新 |
-| `core/jukebox.js` | 曲库索引（`歌手 - 歌名.mp3`）、模糊搜索打分、队列 |
+| `core/jukebox.js` | 曲库索引（`歌手 - 歌名.mp3`）、模糊搜索打分、队列、在线曲目缓存 |
+| `core/music-providers.js` | Jamendo（`JAMENDO_CLIENT_ID`）/ Internet Archive 搜索，只放行 CC BY / BY-SA / CC0 / 公版 |
 | `core/metering.js` / `store.js` / `logger.js` / `watchdog.js` / `sources.js` | 计量、800ms 防抖持久化、日志滚动、心跳看门狗、模拟弹幕源 |
 | `stage/` | 三层渲染器：`whale-girl-3d.js`（程序化 3D）、`whale-girl-layered.js`（**默认**）、`whale-girl.js`（程序化 2D 回退）；`stage.js` 协议/HUD；`audio.js` TTS 队列+AnalyserNode 口型+BGM duck |
 | `admin/` | 零框架控制台：状态/手动说话/事件注入/点歌/配置 JSON/日志 |
@@ -94,7 +95,7 @@ Start-Process node -ArgumentList 'scripts/dev-server.js' -WindowStyle Hidden -Re
 - 默认 2D 模式下 `config.avatar` 只有 `finColor` 生效；admin 没有配色 UI；README 的「控制台改色热更新/clothColor」不成立。
 - 形象素材来源：`refs/workflows/*.json` = **ComfyUI Qwen-Image 2.1 工作流**（seed 42/777/20260929）→ `sheet.png` → `scripts/sheet_cut.py` → `build_layers.py` → 运行时贴片。3D 几何是程序化原创，但默认 2D 立绘是 AI 生成，README 未披露。
 - **安全面**：默认只监听 127.0.0.1 但代码不强制；除 `/ingest`（token 默认 `change-me`）外全部 `/api/*` 无鉴权且 `Access-Control-Allow-Origin: *` → 任意网页可改配置、把 `llm.baseURL` 指向攻击者以窃取 Bearer apiKey；`/api/state` 会回传 `ingest.token`。**密钥已迁移到 `.env`**（运行时覆盖、不写盘、不进 Git），config.json 仅作回退；但上述 API 鉴权缺口仍未修。
-- **打包**：`files` 已补 `build/**/*`（托盘图标）与 `scripts/douyin-collector*.json`（asarUnpack）；`artifactName` 仍缺 `${target}`，nsis/portable 会撞名。
+- **打包**：`files` 已补 `build/**/*`（托盘图标）与 `scripts/douyin-collector*.json`（asarUnpack）；`artifactName` 已按 target 拆分（win 默认 `dyzb-<ver>-<arch>`、nsis `-setup`、portable `-portable`），`${target}` 不是合法宏。
 
 ## 6. 常用操作
 
@@ -105,7 +106,7 @@ npm run server       # 仅本地服务：http://127.0.0.1:17890/stage/ 与 /admi
 npm test             # smoke(18 断言) + http-test(29 断言)，零外网，Echo 模式；本机实测通过
 npm run douyin -- --room <房间号> --ingest http://127.0.0.1:17890 --token <ingestToken>   # 单独跑真实弹幕采集器
 npm run pack         # electron-builder --dir → release/win-unpacked（实测成功，383 MB）
-npm run dist         # NSIS + portable（本机未实测；artifactName 有撞名风险）
+npm run dist         # NSIS + portable（artifactName 已拆分；macOS 上打 win 包见 §10 2026-10-29）
 ```
 
 **密钥**：编辑仓库根 `.env`（`LLM_API_KEY` 等，模板 `.env.example`），改完**重启服务**生效；`.env` 已 gitignore。控制台「配置」面板不再用于改 Key（env 托管字段会被服务端丢弃并在 note 里提示）。验证：`/api/state.llm.status.keySource` 应为 `env`，`mode` 为 `llm`。
@@ -155,3 +156,4 @@ npm run dist         # NSIS + portable（本机未实测；artifactName 有撞�
 ## 10. 变更日志
 - 2026-10-28（下午）：拉取仓库（修复工作区 ACL 后克隆）→ 依赖安装 → 三路并行深度分析（stage / core / toolchain）→ 实测（测试、起服务、三层渲染器截图、GLB 解析、打包）→ 本机运行（浏览器模式）+ Electron 环境问题定位 → 初版本文件。
 - 2026-10-28（晚上）：**真实直播接入**。新增 `.env` 密钥体系（`electron/core/env.js`、config 两层模型、`llm.status`、`POST /api/config` 不落盘 env 值）；新增抖音真实弹幕/礼物采集器（`scripts/douyin-collector.js` ~1.6k 行 + `selectors.json`）与主进程托管（`DouyinSource`，自动重启、系统消息过滤、礼物文案兜底）；控制台新增「抖音真实直播」卡片与 `.env` 状态；新增 `docs/真实直播接入指南.md`、`npm run douyin`；TTS 单价按真实值设为 0。实测：真实房间抓到 comment/enter/like，E2E 60s 26 事件、导演处理 6 条并播报；`.env` 假 Key 测试 → keySource=env / mode=llm / config.json 无泄漏；`npm test` 通过。
+- 2026-10-29：**形象待机动作 + Windows 便携版 + 在线曲库**。① `stage/whale-girl-layered.js` 待机随机动作（张望/歪头/点头/哼歌/轻颤/连眨），`mode!=='idle'` 自动让位；② `package.json` artifactName 按 target 拆分，macOS 上离线打包成功（`-c.electronDist=` 解压好的 electron，`HOME`/`ELECTRON_BUILDER_CACHE` 指到工作区避开 EPERM），产物 `release/dyzb-0.1.0-x64-portable.exe`；③ 新增 `core/music-providers.js` + `jukebox` 在线搜索/缓存：Jamendo（`JAMENDO_CLIENT_ID`）+ Internet Archive，`commercialOnly` 只放行 CC BY/BY-SA/CC0/公版，播放前缓存到 `data/music-cache/`，`/api/songs` 支持在线、控制台点歌台「在线」按钮；④ 测试配置改为 `jukebox.provider='local'` 保持零外网。

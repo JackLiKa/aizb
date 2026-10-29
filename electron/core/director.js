@@ -253,7 +253,7 @@ class Director {
 
   async _handleSong(ev) {
     const cfg = this.config.jukebox;
-    ev.song = ev.song || (cfg.enabled ? this.jukebox.best(ev.query) : null);
+    ev.song = ev.song || (cfg.enabled ? await this.jukebox.bestAsync(ev.query) : null);
     if (!cfg.enabled) {
       ev.song = null;
       await this._talk(ev);
@@ -455,23 +455,43 @@ class Director {
   // ---------- 音乐 ----------
 
   _startNextSong() {
-    const item = this.jukebox.next();
-    if (!item) {
-      this.jukebox.finishCurrent();
-      this._setState('idle');
-      this.send({ type: 'music:stop' });
-      return;
-    }
-    this.send({
-      type: 'music',
-      url: item.song.url,
-      title: item.song.title,
-      artist: item.song.artist,
-      by: item.by,
-      songId: item.id,
+    if (this._startingSong) return;
+    this._startingSong = true;
+    this._startNextSongAsync().catch((err) => {
+      this.logger.warn('音乐启动失败', { error: err.message });
+    }).finally(() => {
+      this._startingSong = false;
     });
-    this._setState('singing');
-    this._broadcastOverlay();
+  }
+
+  async _startNextSongAsync() {
+    let item = this.jukebox.next();
+    while (item) {
+      try {
+        const song = await this.jukebox.ensureLocal(item.song);
+        item.song = song;
+        this.send({
+          type: 'music',
+          url: song.url,
+          title: song.title,
+          artist: song.artist,
+          source: song.source || 'local',
+          license: song.license || '',
+          by: item.by,
+          songId: item.id,
+        });
+        this._setState('singing');
+        this._broadcastOverlay();
+        return;
+      } catch (err) {
+        this.logger.warn(`曲目准备失败，已跳过：《${item.song.title}》`, { error: err.message });
+        this.jukebox.finishCurrent();
+        item = this.jukebox.next();
+      }
+    }
+    this.jukebox.finishCurrent();
+    this._setState('idle');
+    this.send({ type: 'music:stop' });
   }
 
   onMusicEnded() {

@@ -287,6 +287,7 @@ function createServer({
           metering: metering.snapshot(),
           jukebox: jukebox.snapshot(),
           songs: jukebox.list(300),
+          music: jukebox.providers.status(),
           logs: logger.recent(80),
           watchdog: watchdog.status(),
           stageClients: stageClients.size,
@@ -405,13 +406,14 @@ function createServer({
 
       if (pathname === '/api/songs' && req.method === 'GET') {
         const q = url.searchParams.get('q');
-        sendJson(res, 200, { ok: true, songs: q ? jukebox.search(q, 20) : jukebox.list(300) });
+        const songs = q ? await jukebox.searchAll(q, 20) : await jukebox.browse(300);
+        sendJson(res, 200, { ok: true, songs, music: jukebox.providers.status() });
         return;
       }
 
       if (pathname === '/api/songs/queue' && req.method === 'POST') {
         const body = await readJson(req);
-        const song = jukebox.index.find((s) => s.id === body.id);
+        const song = jukebox.find(body.id);
         if (!song) { sendJson(res, 404, { ok: false, error: 'song not found' }); return; }
         const out = api()?.playSongNow(song, body.by || '房主');
         sendJson(res, out?.ok ? 200 : 409, out || { ok: false });
@@ -439,6 +441,10 @@ function createServer({
 
       if (pathname.startsWith('/media/music/')) {
         serveFile(req, res, jukebox.dir, pathname.slice('/media/music/'.length));
+        return;
+      }
+      if (pathname.startsWith('/media/music-cache/')) {
+        serveFile(req, res, jukebox.cacheDir, pathname.slice('/media/music-cache/'.length));
         return;
       }
       if (pathname.startsWith('/media/tts/')) {

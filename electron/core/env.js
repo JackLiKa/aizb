@@ -37,6 +37,7 @@ const ENV_SPEC = [
   { key: 'TTS_PROVIDER', path: ['tts', 'provider'], kind: 'string' },
   { key: 'TTS_VOICE', path: ['tts', 'voice'], kind: 'string' },
   { key: 'INGEST_TOKEN', path: ['ingest', 'token'], kind: 'string', secret: true },
+  { key: 'JAMENDO_CLIENT_ID', path: ['jukebox', 'jamendoClientId'], kind: 'string' },
   { key: 'SERVER_PORT', path: ['server', 'port'], kind: 'integer' },
 ];
 

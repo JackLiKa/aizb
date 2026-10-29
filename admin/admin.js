@@ -16,6 +16,7 @@ let lastLogTs = '';
 let sourceInitialized = false;
 let searchTimer = null;
 let lastSongsQuery = '';
+let onlineCache = { q: null, songs: [] };
 
 async function api(path, options = {}) {
   const res = await fetch(path, {
@@ -170,10 +171,13 @@ function renderSongs(songs) {
   if (q !== lastSongsQuery) return;
   const ul = $('songResults');
   ul.innerHTML = '';
-  const items = (q ? songs.filter((s) => `${s.title} ${s.artist}`.toLowerCase().includes(q)) : songs).slice(0, 30);
+  // 在线搜索结果已由服务端按关键词检索，标题/作者不一定含关键词，不能再二次过滤
+  const serverSearched = Boolean(q) && onlineCache.q === q;
+  const pool = serverSearched ? onlineCache.songs : songs;
+  const items = (q && !serverSearched ? pool.filter((s) => `${s.title} ${s.artist}`.toLowerCase().includes(q)) : pool).slice(0, 30);
   if (!items.length) {
     const li = document.createElement('li');
-    li.textContent = q ? '没有匹配的歌曲' : '曲库是空的，把 mp3 放进 data/music 目录';
+    li.textContent = q ? '没有匹配的歌曲' : '曲库是空的；点「在线」可搜索 Jamendo / Internet Archive';
     ul.appendChild(li);
     return;
   }
@@ -188,6 +192,13 @@ function renderSongs(songs) {
       a.textContent = song.artist;
       wrap.appendChild(a);
     }
+    let badge = null;
+    if (song.source && song.source !== 'local') {
+      badge = document.createElement('span');
+      badge.className = 'badge';
+      badge.textContent = song.source === 'jamendo' ? 'Jamendo' : 'Archive';
+      badge.title = song.license || '在线曲库';
+    }
     const btn = document.createElement('button');
     btn.className = 'btn';
     btn.textContent = '入队';
@@ -198,7 +209,9 @@ function renderSongs(songs) {
         refresh();
       } catch (err) { toast(err.message); }
     });
-    li.append(wrap, btn);
+    li.append(wrap);
+    if (badge) li.append(badge);
+    li.append(btn);
     ul.appendChild(li);
   }
 }
@@ -323,10 +336,42 @@ $('btnSkip').addEventListener('click', async () => {
 $('songQuery').addEventListener('input', () => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => {
+    onlineCache = { q: null, songs: [] };
     lastSongsQuery = $('songQuery').value.trim().toLowerCase();
     if (state) renderSongs(state.songs || []);
   }, 200);
 });
+
+$('songQuery').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') loadOnlineSongs();
+});
+
+$('btnSongOnline').addEventListener('click', () => loadOnlineSongs());
+
+async function loadOnlineSongs() {
+  clearTimeout(searchTimer);
+  const q = $('songQuery').value.trim();
+  const btn = $('btnSongOnline');
+  if (btn.disabled) return;
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '搜索中…';
+  try {
+    const data = await api(`/api/songs?q=${encodeURIComponent(q)}`);
+    if ($('songQuery').value.trim() !== q) return;
+    if (state) state.songs = data.songs;
+    lastSongsQuery = q.toLowerCase();
+    onlineCache = { q: lastSongsQuery, songs: data.songs };
+    renderSongs(data.songs);
+    const online = data.songs.filter((s) => s.source && s.source !== 'local').length;
+    toast(q ? `找到 ${data.songs.length} 首（在线 ${online}）` : `曲库 ${data.songs.length} 首（在线 ${online}）`);
+  } catch (err) {
+    toast(`在线搜索失败：${err.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
 
 $('configText').addEventListener('input', () => { configDirty = true; $('configMsg').textContent = '有未保存的修改'; });
 

@@ -25,7 +25,7 @@
 - **语音**：`msedge-tts`（Edge 朗读，免费、无需 Key），默认 `zh-CN-XiaoxiaoNeural`；可切 OpenAI TTS。按句切分、最多 3 路并行合成、严格按顺序播放。
 - **对话**：OpenAI 兼容接口流式输出（默认 DeepSeek）。没填 Key 时进入 Echo 模式，用内置台词跑通全链路，方便先调画面。
 - **礼物**：高优先级插入、可打断当前播报、屏幕横幅 + 粒子 + 礼物榜。
-- **点歌**：`data/music` 即曲库，文件名 `歌手 - 歌名.mp3` 自动解析；弹幕「点歌 晴天」或控制台搜索入队；放完自动下一首。
+- **点歌**：本地 `data/music`（`歌手 - 歌名.mp3`）与在线曲库（Jamendo / Internet Archive，仅可商用许可）统一搜索、入队；播放前自动缓存，放完自动下一首。
 - **计量**：今日 token / 预估花费 / TTS 字数 / 礼物价值，舞台右上角和控制台同步显示；`displayMultiplier` 可只放大展示数字，真实成本单独记账。
 - **24 小时运行**：舞台心跳看门狗（12s 无心跳自动重载，每小时最多 6 次）、`powerSaveBlocker` 防休眠、托盘常驻、日志按天滚动保留 7 天、夜间时段自动降频。
 
@@ -54,7 +54,7 @@ npm run server -- --seed    # 弹幕更快，方便看效果
 1. 打开控制台（托盘 → 打开控制台，或 `http://127.0.0.1:17890/admin/`）。
 2. 在项目根目录的 `.env` 里填 `LLM_API_KEY`（模板见 `.env.example`，该文件已 gitignore，不会上传 GitHub），改完重启服务即进入 LLM 模式。
 3. 改人设改 `persona.system`；改音色改 `tts.voice`（中文推荐 `zh-CN-XiaoxiaoNeural`、`zh-CN-YunxiNeural`）。
-4. 把 mp3 放进 `data/music/`，点歌台会立刻索引。
+4. 背景音乐不用自己准备：控制台点歌台点「在线」即可搜索 **Jamendo / Internet Archive**，只返回允许商用的 CC 曲目，播放前自动缓存到 `data/music-cache/`。想用自己的歌，也可以把 mp3 放进 `data/music/`（文件名 `歌手 - 歌名.mp3`）。
 
 > 打包后的数据目录在 `%APPDATA%\大肥鱼直播\data`；开发模式在仓库的 `data/`。
 
@@ -183,7 +183,8 @@ electron/
     logger.js           环形缓冲 + 按天日志
     brain.js            LLM 流式（OpenAI 兼容）与 Echo 模式
     voice.js            Edge/OpenAI TTS、磁盘缓存、并发闸门
-    jukebox.js          曲库索引、模糊搜索、点歌队列
+    jukebox.js          曲库索引、在线曲库搜索/缓存、点歌队列
+    music-providers.js  Jamendo / Internet Archive 曲源与商用许可过滤
     director.js         事件 → 优先级队列 → 生成 → 分句 → 播报
     sources.js          模拟弹幕源 / 事件源切换
     metering.js         token、花费、礼物、点歌统计
@@ -214,7 +215,7 @@ build/                  应用图标
 | POST | `/api/event` | 注入一条事件 |
 | POST | `/api/pause` | 暂停/恢复自动回复 |
 | POST | `/api/source` | 切换 `simulator` / `ingest` / `off` |
-| GET/POST | `/api/songs`、`/api/songs/queue`、`/api/songs/skip` | 曲库、入队、切歌 |
+| GET/POST | `/api/songs`、`/api/songs/queue`、`/api/songs/skip` | 曲库（本地 + 在线搜索）、入队、切歌 |
 | POST | `/api/config` | 保存配置 |
 | POST | `/api/restart-stage` | 重载舞台渲染 |
 

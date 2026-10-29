@@ -129,6 +129,12 @@ const DEFAULTS = {
     maxQueue: 10,
     perUserCooldownSec: 300,
     maxSongSec: 600,
+    // auto：配了 Jamendo client_id 时 Jamendo + Archive，否则仅 Archive；也可固定为 local/jamendo/archive
+    provider: 'auto',
+    jamendoClientId: '',
+    commercialOnly: true,
+    cacheDir: 'music-cache',
+    maxCacheMb: 512,
   },
   admin: {
     enabled: true,

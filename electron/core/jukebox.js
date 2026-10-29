@@ -4,6 +4,8 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
+const { MusicProviders } = require('./music-providers');
+
 const EXTS = new Set(['.mp3', '.wav', '.m4a', '.flac', '.ogg', '.aac']);
 
 function normalize(s) {
@@ -16,6 +18,12 @@ class Jukebox {
     this.logger = logger;
     this.dir = path.isAbsolute(config.jukebox.dir) ? config.jukebox.dir : path.join(dataDir, config.jukebox.dir);
     fs.mkdirSync(this.dir, { recursive: true });
+    this.cacheDir = path.isAbsolute(config.jukebox.cacheDir || 'music-cache')
+      ? config.jukebox.cacheDir
+      : path.join(dataDir, config.jukebox.cacheDir || 'music-cache');
+    fs.mkdirSync(this.cacheDir, { recursive: true });
+    this.providers = new MusicProviders({ config, logger });
+    this.remote = new Map();
     this.index = [];
     this.indexedAt = 0;
     this.queue = [];
@@ -85,6 +93,117 @@ class Jukebox {
 
   best(query) {
     return this.search(query, 1)[0] || null;
+  }
+
+  find(id) {
+    return this.index.find((s) => s.id === id) || this.remote.get(id) || null;
+  }
+
+  remember(song) {
+    if (!song || !song.remote) return song;
+    this.remote.set(song.id, song);
+    if (this.remote.size > 200) this.remote.delete(this.remote.keys().next().value);
+    return song;
+  }
+
+  async searchOnline(query, limit = 10) {
+    const songs = await this.providers.search(query, { limit });
+    for (const song of songs) this.remember(song);
+    return songs;
+  }
+
+  async searchAll(query, limit = 20) {
+    const local = this.search(query, limit).map((s) => ({ id: s.id, title: s.title, artist: s.artist, source: 'local' }));
+    let online = [];
+    try {
+      online = await this.searchOnline(query, Math.max(4, limit - local.length));
+    } catch (err) {
+      this.logger?.warn?.('在线曲库搜索失败，仅返回本地曲目', { error: err.message });
+    }
+    const seen = new Set(local.map((s) => `${normalize(s.title)}|${normalize(s.artist)}`));
+    for (const song of online) {
+      const key = `${normalize(song.title)}|${normalize(song.artist)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      local.push(song);
+    }
+    return local.slice(0, limit);
+  }
+
+  async browse(limit = 300) {
+    const out = this.list(limit).map((s) => ({ ...s, source: 'local' }));
+    if (this.providers.mode === 'local') return out;
+    try {
+      for (const song of await this.searchOnline('', 20)) {
+        if (out.some((s) => s.id === song.id)) continue;
+        out.push(song);
+      }
+    } catch (err) {
+      this.logger?.warn?.('在线曲库推荐失败，仅返回本地曲目', { error: err.message });
+    }
+    return out.slice(0, limit);
+  }
+
+  async bestAsync(query) {
+    const local = this.best(query);
+    if (local) return local;
+    try {
+      return (await this.searchOnline(query, 1))[0] || null;
+    } catch (err) {
+      this.logger?.warn?.('在线点歌搜索失败', { error: err.message });
+      return null;
+    }
+  }
+
+  /** 在线曲目先缓存到本机，舞台端仍按静态文件播放（Range / 闪避 / 口型不变）。 */
+  async ensureLocal(song) {
+    if (!song || !song.remote) return song;
+    const name = crypto.createHash('sha1').update(song.id).digest('hex').slice(0, 16) + '.mp3';
+    const dest = path.join(this.cacheDir, name);
+    try {
+      if (fs.statSync(dest).size > 1024) {
+        return { ...song, file: dest, url: `/media/music-cache/${name}` };
+      }
+    } catch (_) { /* 未缓存 */ }
+    if (!song.streamUrl) throw new Error('缺少音轨地址');
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 30000);
+    try {
+      const res = await fetch(song.streamUrl, { signal: ctrl.signal, headers: { 'user-agent': 'dyzb/0.1' } });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length < 1024) throw new Error('音轨内容为空');
+      const tmp = `${dest}.part`;
+      fs.writeFileSync(tmp, buf);
+      fs.renameSync(tmp, dest);
+      this.pruneCache();
+      this.logger?.info?.(`在线曲目已缓存：${song.title}`, { bytes: buf.length });
+      return { ...song, file: dest, url: `/media/music-cache/${name}` };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  pruneCache() {
+    const maxBytes = (this.config.jukebox.maxCacheMb || 512) * 1024 * 1024;
+    let entries = [];
+    try {
+      entries = fs.readdirSync(this.cacheDir)
+        .filter((n) => n.endsWith('.mp3'))
+        .map((n) => {
+          const file = path.join(this.cacheDir, n);
+          const st = fs.statSync(file);
+          return { file, size: st.size, mtime: st.mtimeMs };
+        });
+    } catch (_) {
+      return;
+    }
+    let total = entries.reduce((sum, e) => sum + e.size, 0);
+    entries.sort((a, b) => a.mtime - b.mtime);
+    for (const entry of entries) {
+      if (total <= maxBytes) break;
+      try { fs.unlinkSync(entry.file); total -= entry.size; } catch (_) { /* ignore */ }
+    }
   }
 
   enqueue(song, by) {
