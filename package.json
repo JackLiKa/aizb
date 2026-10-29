@@ -16,6 +16,7 @@
     "shot": "node scripts/shot.js",
     "export:glb": "node scripts/export-glb.js",
     "dist": "electron-builder --win nsis portable",
+    "dist:dashboard": "electron-builder --win portable --config electron-builder.dashboard.yml",
     "pack": "electron-builder --dir"
   },
   "dependencies": {

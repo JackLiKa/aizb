@@ -1,0 +1,21 @@
+appId: com.dyzb.fish.dashboard
+productName: 大肥鱼直播-后台
+directories:
+  output: release-dashboard
+  buildResources: build
+files:
+  - electron/dashboard-main.js
+  - electron/dashboard-wait.html
+  - build/icon.png
+  - package.json
+  - "!node_modules/**"
+extraMetadata:
+  main: electron/dashboard-main.js
+  productName: 大肥鱼直播-后台
+win:
+  target:
+    - portable
+  icon: build/icon.ico
+  artifactName: dyzb-${version}-${arch}-dashboard.${ext}
+portable:
+  artifactName: dyzb-${version}-${arch}-dashboard.${ext}

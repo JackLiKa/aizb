@@ -296,7 +296,7 @@ export class LayeredGirlRenderer {
     this.bowHead += (bowTarget - this.bowHead) * Math.min(1, dt * 9);
     if (this.sadEnv > 0.001) {
       // 真人的“不行”是两下就停，不是连续摆满 4 秒
-      this.sadPhase += dt * TAU * 2.15;
+      this.sadPhase += dt * TAU * 1.7;
       this.sadShakeAmp += (1 - this.sadShakeAmp) * Math.min(1, dt * 6);
     } else {
       this.sadPhase = 0;
@@ -445,27 +445,56 @@ export class LayeredGirlRenderer {
     if (this.mode !== 'idle') this.idleMouth *= Math.pow(0.002, dt);
   }
 
-  // 尾巴和裙摆烘焙在同一张身体图里，没法单独成层：尾根以下整段绕尾根
-  // 做一次旋转，尾鳍横移量最大约 tailAmp 像素，接缝处位移为 0。
-  _drawBody(ctx) {
+  // 尾摆与上身反作用共用一份相位，避免身体和尾巴各摆各的
+  _tailSwing() {
+    const liven = 1 + 0.55 * Math.min(1, Math.abs(this.idle.x) / 2.4 + Math.abs(this.idle.tilt) / 0.06);
+    const ph = this.t * 1.15 * liven + 0.9;
+    // 尾鳍外摆（源像素）：760 行以下只剩垂下的鲸尾与尾鳍，尾根是铰链
+    const fin = this.tailAmp * Math.sin(ph);
+    // 上身反作用：绕髋部倾斜，尾鳍往右甩时上半身往左让，略滞后于鳍
+    const lean = -0.5 * this.tailAmp * Math.sin(ph - 0.22);
+    const hipY = 600;
+    // 剪切系数：x' = x + k*(hipY - y)，等价于绕髋的微小旋转
+    const k = lean / Math.max(1, hipY - this.pivot[1]);
+    return { fin, lean, hipY, k };
+  }
+
+  // 整张身体图都绕髋做剪切：髋部以上越往上位移越大、尾根以下继续外摆。
+  // 尾摆位移在尾根处恰为 0，和剪切在同一条曲线上，所以没有横向接缝。
+  _drawBody(ctx, swing) {
     const img = this.bodyImg;
     const H = img.height;
-    const t0 = this.tailAmp && this.tailY > 0 ? Math.min(this.tailY, H) : H;
-    // 先按原样画整块身体：旋转后的尾巴在接缝附近有 2~3px 覆盖不到，
-    // 由这层兜住，避免背景从缝里透出来
-    ctx.drawImage(img, 0, 0);
-    if (t0 >= H) return;
+    const sw = this.sw;
+    const t0 = Math.min(this.tailY || H, H);
+    const { fin, hipY, k } = swing;
+    const shear = (y) => k * (hipY - y);
+
+    if (t0 > 0) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, sw, t0);
+      ctx.clip();
+      ctx.transform(1, 0, -k, 1, k * hipY, 0);
+      ctx.drawImage(img, 0, 0, sw, t0, 0, 0, sw, t0);
+      ctx.restore();
+    }
+
     const span = H - t0;
-    const liven = 1 + 0.55 * Math.min(1, Math.abs(this.idle.x) / 2.4 + Math.abs(this.idle.tilt) / 0.06);
-    const ang = (this.tailAmp / span) * Math.sin(this.t * 1.15 * liven + 0.9);
+    if (span <= 0) return;
+    // 尾段：剪切位移（尾根处接上上身）+ 尾根 0 起坡、尾尖最大的摆幅
+    const bands = 48;
     ctx.save();
-    // 整段旋转时尾巴左上角会翘到接缝之上，用水平裁剪把接缝焊死
     ctx.beginPath();
-    ctx.rect(0, t0, this.sw, span);
+    ctx.rect(0, t0, sw, span);
     ctx.clip();
-    ctx.translate(this.tailPivot, t0);
-    ctx.rotate(ang);
-    ctx.drawImage(img, 0, t0, this.sw, span, -this.tailPivot, 0, this.sw, span);
+    for (let i = 0; i < bands; i += 1) {
+      const y0 = t0 + Math.round((span * i) / bands);
+      const y1 = t0 + Math.round((span * (i + 1)) / bands);
+      if (y1 <= y0) continue;
+      const kk = (y0 + y1) * 0.5 - t0;
+      const dx = shear(t0) + fin * (kk / span) * (kk / span);
+      ctx.drawImage(img, 0, y0, sw, y1 - y0, dx, y0, sw, y1 - y0);
+    }
     ctx.restore();
   }
 
@@ -515,7 +544,8 @@ export class LayeredGirlRenderer {
     ctx.translate(-cw / 2, -ch);
     ctx.scale(s, s);
 
-    this._drawBody(ctx);
+    const swing = this._tailSwing();
+    this._drawBody(ctx, swing);
 
     const [px, py] = this.pivot;
     let tilt = (Math.sin(this.t * 0.82 + 0.6) * 0.020 + this.idle.tilt) * (1 - 0.85 * this.sadEnv);
@@ -526,33 +556,33 @@ export class LayeredGirlRenderer {
       const fade = clamp((this.happyUntil - now) / 1200, 0, 1);
       tilt += Math.sin(hp * TAU * 1.7) * 0.018 * fade;
     }
-    const sadShake = Math.sin(this.sadPhase - 0.45) * 0.022 * this.sadEnv * this.sadShakeAmp * (1 - 0.5 * sadP) * shakeGate;
+    const sadShake = Math.sin(this.sadPhase) * 0.036 * this.sadEnv * this.sadShakeAmp * (1 - 0.5 * sadP) * shakeGate;
     if (this.sadEnv > 0.001) tilt += sadShake + 0.012 * this.sadEnv;
     if (this.bowHead > 0.001) tilt += this.bowHead * 0.052;
+    // 脖子跟一点上身的倾斜，但幅度只有一半，头仍然是「稳」的
+    tilt += swing.k * 0.5;
     // 头绕颈根旋转，限幅避免发梢/下巴把脖子或衣服撕开
     tilt = clamp(tilt, -0.095, 0.095);
     const headBob = Math.sin(this.t * 1.45 + 0.9) * 1.6 + this.idle.y
       + this.bowHead * 40 + this.sadEnv * 1.4;
-    const headPan = this.idle.x + sadWave * 3.0;
-    // 2D 没有转头帧：用绕颈根的横向剪切伪造“转头”，头顶摆幅大于下巴，脖子不会脱开
-    const headShear = sadWave * 0.095;
+    const headPan = this.idle.x + sadWave * 0.8;
     // 难过时让原嘴淡出、只留画在干净皮肤上的小撇嘴，避免叠出“补丁嘴”
     const sadMouth = clamp((this.sadEnv - 0.3) / 0.4, 0, 1);
 
     ctx.save();
-    ctx.translate(px + headPan, py + headBob);
+    // 头部只做刚体变换（绕颈根旋转 + 平移）：剪切会把脸拉斜，近看像橡皮
+    // 上身倾了多少，颈根就平移多少，头跟着走才不会从脖子上脱落
+    ctx.translate(px + headPan + swing.lean, py + headBob);
     ctx.rotate(tilt);
-    ctx.transform(1, 0, headShear, 1, 0, 0);
     ctx.translate(-px, -py);
     ctx.drawImage(this.headImg, 0, 0);
 
-    if (this.blink > 0.01) {
-      ctx.globalAlpha = this.blink;
+    // 闭眼贴片整像素、不透明地盖上去（半透明会透出虹膜，看着像穿模）
+    if (this.blink > 0.5 || sadMouth > 0.5) {
       for (const side of ['left', 'right']) {
         const b = this.meta.eyes[side].box;
         ctx.drawImage(this.eyeImgs[side], b[0], b[1], b[2] - b[0], b[3] - b[1]);
       }
-      ctx.globalAlpha = 1;
     }
 
     const [mx0, my0, mx1, my1] = this.mouthBox;
@@ -602,17 +632,9 @@ export class LayeredGirlRenderer {
     if (this.mode === 'thinking') this._drawThinking(ctx, cx + cw * 0.34, baseY - ch * 0.93);
   }
 
-  // 无奈表情：闭眼 + 嘴角下压 + 太阳穴汗滴（全部画在头部坐标系内，跟随头部旋转）
+  // 无奈表情：闭眼（由 draw 里的闭眼贴片负责）+ 嘴角下压 + 太阳穴汗滴
   _drawSadFace(ctx, k, now, talking) {
     const t = (now - this.sadT0) / 1000;
-
-    ctx.save();
-    ctx.globalAlpha = Math.min(1, k * 2.2);
-    for (const side of ['left', 'right']) {
-      const b = this.meta.eyes[side].box;
-      ctx.drawImage(this.eyeImgs[side], b[0], b[1], b[2] - b[0], b[3] - b[1]);
-    }
-    ctx.restore();
 
     if (!talking) {
       const [mx0, my0, mx1, my1] = this.mouthBox;
