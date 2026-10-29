@@ -251,7 +251,7 @@ export class WhaleGirlRenderer {
     this.bowEnv = this._bowCurve(now);
     this.sadEnv = this._actionEnv(now, this.sadT0, this.sadDur, 0.12, 0.66);
     if (this.sadEnv > 0.001) {
-      this.sadPhase += dt * TAU * 2.15;
+      this.sadPhase += dt * TAU * 1.15;
       this.sadShakeAmp += (1 - this.sadShakeAmp) * Math.min(1, dt * 3.2);
     } else {
       this.sadPhase = 0;
@@ -321,10 +321,8 @@ export class WhaleGirlRenderer {
     ctx.translate(cx, cy);
     ctx.scale(scale, scale);
     const tilt = Math.sin(this.t * 0.8) * 0.014;
-    // 摇头只在前 1.15s，与分层/3D 渲染器同步
-    const shakeP = this.sadT0 ? clamp((now - this.sadT0) / 1150, 0, 1) : 1;
-    const shakeGate = this.sadT0 ? Math.pow(Math.sin(Math.PI * shakeP), 0.65) * (1 - 0.45 * shakeP) : 0;
-    const sadShake = Math.sin(this.sadPhase) * 0.020 * this.sadEnv * this.sadShakeAmp * shakeGate;
+    const sadP = this.sadDur ? clamp((now - this.sadT0) / this.sadDur, 0, 1) : 1;
+    const sadShake = Math.sin(this.sadPhase) * 0.020 * this.sadEnv * this.sadShakeAmp * (1 - 0.35 * sadP);
     const bob = Math.sin(this.t * 1.15) * 5 - bounce * 0.15 + this.bowEnv * 10 + this.sadEnv * 2;
     const hopE = this.bounceAmp ? clamp(bounce / this.bounceAmp, 0, 1) : 0;
     ctx.translate(0, bob);

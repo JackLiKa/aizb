@@ -443,7 +443,7 @@ export class WhaleGirlRenderer3D {
     this.singEnv += ((singing ? 1 : 0) - this.singEnv) * Math.min(1, dt * 3);
     this.speakEnv += ((speaking ? 1 : 0) - this.speakEnv) * Math.min(1, dt * 6);
     if (this.sadEnv > 0.001) {
-      this.sadPhase += dt * TAU * 2.15;
+      this.sadPhase += dt * TAU * 1.15;
       this.sadShakeAmp += (1 - this.sadShakeAmp) * Math.min(1, dt * 3.2);
     } else {
       this.sadPhase = 0;
@@ -488,16 +488,14 @@ export class WhaleGirlRenderer3D {
     this.root.rotation.y = this.viewYaw + Math.sin(t * 0.4) * 0.03;
     if (nodes.body) nodes.body.rotation.x = this.bowEnv * 0.12 - this.sadEnv * 0.03;
 
-    // 摇头只在前 1.15s：包络快起慢收，之后保持无奈表情而不是一直摆
-    const shakeP = this.sadT0 ? clamp((now - this.sadT0) / 1150, 0, 1) : 1;
-    const shakeGate = this.sadT0 ? Math.pow(Math.sin(Math.PI * shakeP), 0.65) * (1 - 0.45 * shakeP) : 0;
-    const sadK = this.sadEnv * this.sadShakeAmp * shakeGate;
-    const sadShakeY = Math.sin(this.sadPhase) * 0.24 * sadK;
+    const sadP = this.sadDur ? clamp((now - this.sadT0) / this.sadDur, 0, 1) : 1;
+    const sadDecay = 1 - 0.35 * sadP;
+    const sadShakeY = Math.sin(this.sadPhase) * 0.24 * this.sadEnv * this.sadShakeAmp * sadDecay;
     nodes.head.rotation.x = Math.sin(t * 0.9) * 0.02 - 0.07 * this.thinkEnv + Math.sin(t * 3) * 0.008 * this.mouth
-      + this.bowHead * 0.34 + (Math.sin(this.sadPhase - 0.5) * 0.022 + 0.02) * sadK;
+      + this.bowHead * 0.34 + (Math.sin(this.sadPhase - 0.5) * 0.022 + 0.02) * this.sadEnv * this.sadShakeAmp * sadDecay;
     nodes.head.rotation.y = Math.sin(t * 0.55) * 0.04 + 0.09 * this.thinkEnv + sadShakeY;
     nodes.head.rotation.z = Math.sin(t * 0.7) * 0.015 + 0.1 * this.thinkEnv
-      - this.sadEnv * 0.03 + Math.sin(this.sadPhase - 0.3) * 0.012 * sadK;
+      - this.sadEnv * 0.03 + Math.sin(this.sadPhase - 0.3) * 0.012 * this.sadEnv * this.sadShakeAmp * sadDecay;
     nodes.head.position.y = this.headY0 - this.bowHead * 0.02;
     nodes.head.position.z = this.headZ0 + this.bowHead * 0.26;
 
