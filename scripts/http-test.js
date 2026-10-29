@@ -248,6 +248,34 @@ async function main() {
   assert(cfgJson.ok && cfgJson.config.llm.model === 'test-model', '配置保存失败');
   assert(config.llm.apiKey === '', '星号 apiKey 不应覆盖原值');
 
+  // 队列手动排序：连续入队 3 首，把最后一首置顶
+  for (let i = 0; i < 3; i += 1) {
+    const r = await fetch(`${base}/api/songs/queue`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: songId, by: `排序${i}` }),
+    });
+    assert(r.status === 200, `排序测试入队失败: ${r.status}`);
+  }
+  const qstate = await (await fetch(`${base}/api/state`)).json();
+  assert(qstate.jukebox.queue.length >= 2, `排序测试应有排队曲目，实际 ${qstate.jukebox.queue.length}`);
+  const lastId = qstate.jukebox.queue[qstate.jukebox.queue.length - 1].id;
+  const mv = await fetch(`${base}/api/songs/move`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: lastId, to: 'top' }),
+  });
+  const mvJson = await mv.json();
+  assert(mv.status === 200 && mvJson.index === 0, '置顶接口应把曲目移到队首');
+  const qstate2 = await (await fetch(`${base}/api/state`)).json();
+  assert(qstate2.jukebox.queue[0].id === lastId, '置顶后队列顺序应更新');
+  const rm = await fetch(`${base}/api/songs/remove`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: lastId }),
+  });
+  assert(rm.status === 200, '移出队列接口应成功');
+
   console.log('--- HTTP 联调测试通过 ---');
   console.log(JSON.stringify({
     port,

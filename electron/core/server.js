@@ -420,6 +420,25 @@ function createServer({
         return;
       }
 
+      if (pathname === '/api/songs/move' && req.method === 'POST') {
+        const body = await readJson(req);
+        if (!body?.id) { sendJson(res, 400, { ok: false, error: 'id required' }); return; }
+        const out = jukebox.move(body.id, { index: body.index, to: body.to });
+        if (!out.ok) { sendJson(res, 404, { ok: false, error: out.reason }); return; }
+        api()?.refreshOverlay?.();
+        sendJson(res, 200, { ok: true, index: out.index });
+        return;
+      }
+
+      if (pathname === '/api/songs/remove' && req.method === 'POST') {
+        const body = await readJson(req);
+        const ok = body?.id ? jukebox.remove(body.id) : false;
+        if (!ok) { sendJson(res, 404, { ok: false, error: 'not found' }); return; }
+        api()?.refreshOverlay?.();
+        sendJson(res, 200, { ok: true });
+        return;
+      }
+
       if (pathname === '/api/songs/skip' && req.method === 'POST') {
         api()?.skipMusic();
         sendJson(res, 200, { ok: true });

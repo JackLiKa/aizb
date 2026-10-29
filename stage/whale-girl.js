@@ -49,6 +49,15 @@ export class WhaleGirlRenderer {
     this.mouthTarget = 0;
     this.happyUntil = 0;
     this.bounceUntil = 0;
+    this.bounceStart = 0;
+    this.bounceDur = 1400;
+    this.bounceAmp = 18;
+    this.bowT0 = 0;
+    this.bowDur = 2400;
+    this.bowEnv = 0;
+    this.sadT0 = 0;
+    this.sadDur = 4200;
+    this.sadEnv = 0;
     this.nextBlink = 2 + Math.random() * 3;
     this.blinkStart = -1;
     this.particles = [];
@@ -122,9 +131,51 @@ export class WhaleGirlRenderer {
   }
 
   celebrate() {
-    this.happyUntil = performance.now() + 2600;
-    this.bounceUntil = performance.now() + 1400;
+    const now = performance.now();
+    this.bowT0 = 0;
+    this.sadT0 = 0;
+    this.happyUntil = now + 2600;
+    this.bounceStart = now;
+    this.bounceDur = 1400;
+    this.bounceAmp = 18;
+    this.bounceUntil = now + this.bounceDur;
     this._spawnBurst(38);
+  }
+
+  bow() {
+    const now = performance.now();
+    this.bowT0 = now;
+    this.bowDur = 2400;
+    this.sadT0 = 0;
+    this.happyUntil = Math.max(this.happyUntil, now + 1400);
+    this.bounceStart = 0;
+    this.bounceUntil = 0;
+    this._spawnBurst(18);
+  }
+
+  shakeHead() {
+    const now = performance.now();
+    this.sadT0 = now;
+    this.sadDur = 4200;
+    this.bowT0 = 0;
+    this.happyUntil = 0;
+    this.bounceStart = 0;
+    this.bounceUntil = 0;
+  }
+
+  _actionEnv(now, t0, dur, inFrac = 0.22, holdFrac = 0.58) {
+    if (!t0) return 0;
+    const p = (now - t0) / dur;
+    if (p <= 0 || p >= 1) return 0;
+    if (p < inFrac) return p / inFrac;
+    if (p < holdFrac) return 1;
+    return 1 - (p - holdFrac) / (1 - holdFrac);
+  }
+
+  _hop(now) {
+    if (!this.bounceStart || now >= this.bounceUntil) return 0;
+    const p = clamp((now - this.bounceStart) / this.bounceDur, 0, 1);
+    return Math.sin(p * Math.PI) * this.bounceAmp;
   }
 
   _seedBubbles() {
@@ -160,6 +211,9 @@ export class WhaleGirlRenderer {
   }
 
   update(dt, now) {
+    this.bowEnv = this._actionEnv(now, this.bowT0, this.bowDur, 0.26, 0.4);
+    this.sadEnv = this._actionEnv(now, this.sadT0, this.sadDur, 0.14, 0.64);
+
     this.mouth += (this.mouthTarget - this.mouth) * Math.min(1, dt * 18);
     if (this.mode !== 'speaking') this.mouthTarget *= Math.pow(0.001, dt);
 
@@ -211,9 +265,7 @@ export class WhaleGirlRenderer {
     this._drawBubbles(ctx, w, h);
 
     const happy = now < this.happyUntil;
-    const bounce = now < this.bounceUntil
-      ? Math.sin((this.bounceUntil - now) / 140) * (this.bounceUntil - now) / 140 * 18
-      : 0;
+    const bounce = this._hop(now);
 
     const cx = w / 2;
     const cy = h * 0.5 - bounce;
@@ -225,15 +277,19 @@ export class WhaleGirlRenderer {
     ctx.translate(cx, cy);
     ctx.scale(scale, scale);
     const tilt = Math.sin(this.t * 0.8) * 0.014;
-    const bob = Math.sin(this.t * 1.15) * 5 - bounce * 0.15;
+    const sadShake = this.sadEnv > 0.001
+      ? Math.sin(((now - this.sadT0) / 1000) * Math.PI * 2 * 2.1) * 0.06 * this.sadEnv
+      : 0;
+    const bob = Math.sin(this.t * 1.15) * 5 - bounce * 0.15 + this.bowEnv * 10 + this.sadEnv * 2;
     ctx.translate(0, bob);
-    ctx.rotate(tilt);
+    ctx.rotate(tilt + sadShake + this.bowEnv * 0.05);
+    if (this.bowEnv > 0.001) ctx.scale(1, 1 - this.bowEnv * 0.055);
     this._drawTail(ctx);
     this._drawBackHair(ctx);
     this._drawBody(ctx);
     this._drawHead(ctx);
     this._drawEars(ctx);
-    this._drawFace(ctx, happy);
+    this._drawFace(ctx, happy, this.sadEnv);
     this._drawSideLocks(ctx);
     this._drawBangs(ctx);
     this._drawAhoge(ctx);
@@ -572,7 +628,7 @@ export class WhaleGirlRenderer {
     }
   }
 
-  _drawFace(ctx, happy) {
+  _drawFace(ctx, happy, sad = 0) {
     const pal = this.palette;
 
     for (const s of [-1, 1]) {
@@ -595,8 +651,8 @@ export class WhaleGirlRenderer {
       ctx.stroke();
     }
 
-    this._drawEye(ctx, -60, happy);
-    this._drawEye(ctx, 60, happy);
+    this._drawEye(ctx, -60, happy, sad);
+    this._drawEye(ctx, 60, happy, sad);
 
     ctx.strokeStyle = withAlpha(pal.skinShade, 0.85);
     ctx.lineWidth = 3;
@@ -604,18 +660,24 @@ export class WhaleGirlRenderer {
     ctx.arc(0, -40, 4, Math.PI * 0.15, Math.PI * 0.85);
     ctx.stroke();
 
-    this._drawMouth(ctx);
+    this._drawMouth(ctx, sad);
+    if (sad > 0.05) this._drawSadDrop(ctx, sad);
     if (this.mode === 'thinking') this._drawThinking(ctx);
   }
 
-  _drawEye(ctx, x, happy) {
+  _drawEye(ctx, x, happy, sad = 0) {
     const pal = this.palette;
-    if (happy) {
+    if (happy || sad > 0.05) {
       ctx.strokeStyle = '#2b3a52';
-      ctx.lineWidth = 7;
+      ctx.lineWidth = sad > 0.05 ? 6 : 7;
       ctx.lineCap = 'round';
       ctx.beginPath();
-      ctx.arc(x, -58, 22, Math.PI * 1.12, Math.PI * 1.88);
+      if (sad > 0.05) {
+        // 无奈：眼皮下垂的闭眼弧，比开心时的弧更平、更低
+        ctx.arc(x, -53, 20, Math.PI * 1.18, Math.PI * 1.82);
+      } else {
+        ctx.arc(x, -58, 22, Math.PI * 1.12, Math.PI * 1.88);
+      }
       ctx.stroke();
       return;
     }
@@ -687,15 +749,39 @@ export class WhaleGirlRenderer {
     ctx.restore();
   }
 
-  _drawMouth(ctx) {
+  _drawSadDrop(ctx, k) {
+    const x = 104;
+    const y = -76 + Math.sin(this.t * 2.2) * 2;
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, k * 1.2);
+    const g = ctx.createLinearGradient(x, y - 8, x, y + 8);
+    g.addColorStop(0, 'rgba(228, 247, 255, 0.95)');
+    g.addColorStop(1, 'rgba(110, 185, 245, 0.85)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.moveTo(x, y - 8);
+    ctx.bezierCurveTo(x + 6, y - 1, x + 5, y + 6, x, y + 7);
+    ctx.bezierCurveTo(x - 5, y + 6, x - 6, y - 1, x, y - 8);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.ellipse(x - 1.8, y + 1.5, 1.6, 2.6, -0.4, 0, TAU);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  _drawMouth(ctx, sad = 0) {
     const open = this.mouth;
     ctx.save();
     ctx.translate(0, -14);
 
     if (open < 0.07) {
+      const k = Math.min(1, sad);
       ctx.beginPath();
       ctx.moveTo(-11, -2);
-      ctx.quadraticCurveTo(0, 10, 11, -2);
+      // k 越大嘴角越往下：开心弧 → 直线 → 下垂弧
+      ctx.quadraticCurveTo(0, 10 * (1 - k) - 7 * k, 11, -2);
       ctx.strokeStyle = 'rgba(140, 87, 84, 0.95)';
       ctx.lineWidth = 4;
       ctx.lineCap = 'round';

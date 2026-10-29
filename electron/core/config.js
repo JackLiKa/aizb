@@ -37,7 +37,9 @@ const DEFAULTS = {
     blushColor: '#fdc5bd',
   },
   source: {
-    type: 'simulator',
+    // 默认不造数据：只接受真实弹幕接入（POST /ingest 或抖音采集器）。
+    // 演示/自测请显式切到 simulator（控制台下拉框或 dev-server --seed）。
+    type: 'ingest',
     simulator: {
       commentsPerMinute: 10,
       giftEverySec: 100,

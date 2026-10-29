@@ -54,6 +54,7 @@ async function main() {
   director.push({ type: 'follow', user: '路过的风' });
   director.push({ type: 'song', user: '阿呆', query: '测试' });
   director.push({ type: 'comment', user: '柠檬精', text: '点歌 测试歌曲' });
+  director.push({ type: 'comment', user: '找不到', text: '点歌 完全不存在的歌名' });
 
   const started = Date.now();
   while ((director.busy || director.queue.length) && Date.now() - started < 8000) {
@@ -68,6 +69,11 @@ async function main() {
   assert(types.includes('overlay'), '应推送 overlay');
   assert(types.includes('music'), '点歌成功后应开始播放');
   assert(types.includes('emote'), '送礼物应触发表情');
+  assert(messages.some((m) => m.type === 'emote' && m.name === 'gift'), '礼物应触发鞠躬表情');
+  assert(
+    messages.some((m) => m.type === 'emote' && m.name === 'sad' && m.event?.kind === 'song-not-found'),
+    '点歌找不到时应触发无奈摇头表情',
+  );
 
   const doneIds = messages.filter((m) => m.type === 'say:done').map((m) => m.utteranceId);
   assert(new Set(doneIds).size >= 3, `应至少完成 3 段播报，实际 ${doneIds.length}`);
@@ -79,6 +85,15 @@ async function main() {
   assert(snap.today.tokens > 0, 'token 统计应大于 0');
   assert(snap.topGifts[0].name === '夜猫子', '礼物榜异常');
   assert(jukebox.queue.length + (jukebox.current ? 1 : 0) >= 1, '点歌应进入队列');
+
+  const mvA = jukebox.enqueue({ id: 'mv-a', title: '甲', artist: '', source: 'local', url: '/a.mp3' }, '测试');
+  const mvB = jukebox.enqueue({ id: 'mv-b', title: '乙', artist: '', source: 'local', url: '/b.mp3' }, '测试');
+  assert(mvA.ok && mvB.ok, '队列应可加入测试曲目');
+  const pinned = jukebox.move(mvB.item.id, { to: 'top' });
+  assert(pinned.ok && jukebox.queue[0].id === mvB.item.id, '置顶应把曲目移到队首');
+  const shifted = jukebox.move(mvB.item.id, { index: 1 });
+  assert(shifted.ok && jukebox.queue[1].id === mvB.item.id, '按索引移动应改变顺序');
+  assert(jukebox.remove(mvB.item.id) && jukebox.remove(mvA.item.id), '应可移出队列');
 
   const spoken = [];
   const fakeVoice = {

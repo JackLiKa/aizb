@@ -1,7 +1,7 @@
 # AGENTS.md · 大肥鱼直播（aizb）项目记忆
 
 > 本文件是本工作区的**项目记忆与操作约定**，DSH 会把 `A:\project\aizb\AGENTS.md` 自动注入到该工作区的会话。
-> 最后更新：2026-10-29 00:00（Asia/Shanghai）。已包含：拉取/分析/运行记录、真实直播接入（.env + 抖音采集器）、合规人工确认模式、数据持久化看板、虚拟形象报备素材。
+> 最后更新：2026-10-29 13:20（Asia/Shanghai）。已包含：拉取/分析/运行记录、真实直播接入（.env + 抖音采集器）、合规人工确认模式、数据持久化看板、虚拟形象报备素材。
 > 事实优先级：本文件 < 代码 < `_analysis/` 下的深度报告（有 file:line 证据）。
 
 ---
@@ -89,7 +89,7 @@ Start-Process node -ArgumentList 'scripts/dev-server.js' -WindowStyle Hidden -Re
 ## 5. 关键代码事实（易踩的坑）
 
 - **默认形象是分层 2D，不是 3D**：`main.js:207` 加载 `/stage/` 不带参数，`stage.js:30` 默认 `'2d'` → `LayeredGirlRenderer`；3D 需手动 `?avatar=3d`（还需 WebGL2）。与 README「3D 优先、失败回退 2D」相反。
-- 渲染器回退链：`3d` →（失败换 canvas）分层 2D → 程序化 2D（`stage.js:28-55`），鸭子接口 `setPalette/setMode/setMouth/celebrate/start`，无共享基类。
+- 渲染器回退链：`3d` →（失败换 canvas）分层 2D → 程序化 2D（`stage.js:28-55`），鸭子接口 `setPalette/setMode/setMouth/celebrate/start` + 可选 `bow()/shakeHead()`，无共享基类；舞台 `emote` 按 `name` 分流（`gift`→鞠躬、`sad`→摇头、其余→celebrate）。
 - 3D 模型：`stage/whale-model.js` 1,031 行纯几何拼装，311 Mesh / 96,598 面 / 28 材质 / 108 命名节点，无骨骼；`faceDecal` 投影贴片 + 运行时 192² 虹膜 DataTexture；运行时 330 draw calls/帧。
 - `stage/assets/whale-girl.glb` 实测 **351 节点 / 281 mesh / 28 材质 / 2 动画(Idle,Talk) / 0 skin**，2.43 MB；是旧代码导出快照，运行时**不加载**（仅导出/测试用）。
 - 默认 2D 模式下 `config.avatar` 只有 `finColor` 生效；admin 没有配色 UI；README 的「控制台改色热更新/clothColor」不成立。
@@ -158,3 +158,4 @@ npm run dist         # NSIS + portable（artifactName 已拆分；macOS 上打 w
 - 2026-10-28（晚上）：**真实直播接入**。新增 `.env` 密钥体系（`electron/core/env.js`、config 两层模型、`llm.status`、`POST /api/config` 不落盘 env 值）；新增抖音真实弹幕/礼物采集器（`scripts/douyin-collector.js` ~1.6k 行 + `selectors.json`）与主进程托管（`DouyinSource`，自动重启、系统消息过滤、礼物文案兜底）；控制台新增「抖音真实直播」卡片与 `.env` 状态；新增 `docs/真实直播接入指南.md`、`npm run douyin`；TTS 单价按真实值设为 0。实测：真实房间抓到 comment/enter/like，E2E 60s 26 事件、导演处理 6 条并播报；`.env` 假 Key 测试 → keySource=env / mode=llm / config.json 无泄漏；`npm test` 通过。
 - 2026-10-29：**形象待机动作 + Windows 便携版 + 在线曲库**。① `stage/whale-girl-layered.js` 待机随机动作（张望/歪头/点头/哼歌/轻颤/连眨），`mode!=='idle'` 自动让位；② `package.json` artifactName 按 target 拆分，macOS 上离线打包成功（`-c.electronDist=` 解压好的 electron，`HOME`/`ELECTRON_BUILDER_CACHE` 指到工作区避开 EPERM），产物 `release/dyzb-0.1.0-x64-portable.exe`；③ 新增 `core/music-providers.js` + `jukebox` 在线搜索/缓存：Jamendo（`JAMENDO_CLIENT_ID`）+ Internet Archive，`commercialOnly` 只放行 CC BY/BY-SA/CC0/公版，播放前缓存到 `data/music-cache/`，`/api/songs` 支持在线、控制台点歌台「在线」按钮；④ 测试配置改为 `jukebox.provider='local'` 保持零外网。已提交 `ad3f363`/`ba66023` 并推送；Jamendo client_id 已配置在本地 `.env`（不入库），Windows 端用 ISO 里的 `setup-jamendo.cmd` 写入 `%APPDATA%\大肥鱼直播\.env`；Jamendo 候选窗口放大到最少 80 条并对偶发空结果重试一次。重新打包 `release/dyzb-0.1.0-x64-portable.exe`（asar 含 `music-providers.js`），新 ISO `.vm-share/update-ba66023.iso` 已挂到 VM 光驱 `SATA-1-0`（含源码包 `aizb-ba66023.zip`）。⑤ 按抖音客服口径调整播报模式：`compliance.humanInLoop` 默认改为 `false`（AI 直接播报 + 真人全程值守），需要逐条确认再改回 `true`；ISO 增加 `enable-autospeak.cmd` 用于把已保存的配置改回自动播报。
 - 2026-10-29（中午）：**虚拟机全链路实测 + 在线音频下载超时修复**。Windows 11 VirtualBox（无 Guest Additions）内跑 `release/dyzb-0.1.0-x64-portable.exe`：`/health`、舞台 SSE、模拟弹幕→Echo 回复→Edge TTS 播报、Jamendo 搜索/入队/播放、`/dashboard/` 全部打通。定位并修复 `electron/core/jukebox.js` 的 `ensureLocal` 超时 bug：单曲常有 10–15 MB，客户机下载实测 31.5s，而原超时 30s 必然中止（日志 `fetch failed` / `This operation was aborted`）；现放宽到 120s 并失败重试一次。复测新曲 `jamendo:1268018` 成功缓存 9,687,040 字节并进入 singing。VM 操作要点：便携版真实进程不在 `taskkill /im dyzb-*.exe` 覆盖范围内，需按监听 17890 的 PID 强杀；`go.bat` 已改为 PowerShell 按端口杀进程。
+- 2026-10-29（下午）：**真实数据默认 + 点歌队列管理 + 礼物鞠躬/找不到摇头**。① `source.type` 默认改 `ingest`（`config.js` 与本地 `data/config.json`），模拟弹幕只用于 `dev-server --seed` 或控制台显式选择，控制台数据源标签区分 外部接入/抖音直播/已关闭。② 评论点歌链路实测：`POST /ingest` 评论「点歌 晴天」→ 本地/在线检索 → 入队 → `music` SSE（真实 LLM + Edge TTS）。③ 新增队列手动管理：`Jukebox.move(id,{index|to})`、`POST /api/songs/move`、`POST /api/songs/remove`；控制台点歌台显示完整队列，支持置顶/上移/下移/移除，操作后 `refreshOverlay()` 立即刷新舞台叠层。④ 表情动作协议扩展：礼物 `emote{name:'gift'}` → `avatar.bow()` 鞠躬；点歌未找到 → `emote{name:'sad'}` → 无奈脸（闭眼+撇嘴+汗滴）+ 摇头；三层渲染器全部实现。⑤ 穿模修复：无界弹跳改 `sin(πp)·amp`、头部倾斜限幅 ±0.09、嘴部贴片按自身框裁剪（张口不再顶到下巴/领结）、鞠躬/摇头期间待机动作让位；像素差分确认嘴部变化不越出贴片框。⑥ `npm test` 增加队列移动/移除、礼物鞠躬、未找到摇头断言；三层渲染器经真实 SSE 动作链路 E2E 验证。

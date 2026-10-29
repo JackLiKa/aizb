@@ -122,6 +122,7 @@ function render() {
     $('nowPlaying').textContent = jukebox.current
       ? `当前：${jukebox.current.title} · ${jukebox.current.by}`
       : '当前：无';
+    renderQueue(jukebox);
   }
 
   if (logs) renderLogs(logs);
@@ -223,6 +224,71 @@ async function refresh() {
   } catch (err) {
     setPill($('pillStage'), '服务连接失败', 'bad');
   }
+}
+
+async function moveSong(id, target) {
+  try {
+    await api('/api/songs/move', { method: 'POST', body: JSON.stringify({ id, ...target }) });
+    toast(target.to === 'top' ? '已置顶' : '已调整顺序');
+    refresh();
+  } catch (err) { toast(err.message); }
+}
+
+async function removeSong(id) {
+  try {
+    await api('/api/songs/remove', { method: 'POST', body: JSON.stringify({ id }) });
+    toast('已移出队列');
+    refresh();
+  } catch (err) { toast(err.message); }
+}
+
+function renderQueue(jukebox) {
+  const ul = $('queueList');
+  const list = jukebox?.queue || [];
+  $('queueCount').textContent = `${list.length} 首`;
+  ul.innerHTML = '';
+  if (!list.length) {
+    const li = document.createElement('li');
+    li.className = 'empty';
+    li.textContent = jukebox?.current ? '队列为空，正在播放当前曲目' : '队列为空';
+    ul.appendChild(li);
+    return;
+  }
+  list.forEach((item, i) => {
+    const li = document.createElement('li');
+    const title = document.createElement('span');
+    title.className = 'title';
+    title.textContent = `${i + 1}. ${item.title}`;
+    if (item.artist) {
+      const a = document.createElement('span');
+      a.className = 'artist';
+      a.textContent = item.artist;
+      title.appendChild(a);
+    }
+    const by = document.createElement('span');
+    by.className = 'artist';
+    by.textContent = item.by || '';
+
+    const btns = document.createElement('span');
+    btns.className = 'qbtns';
+    const mk = (label, hint, act, cls = '', disabled = false) => {
+      const b = document.createElement('button');
+      b.className = `btn ${cls}`.trim();
+      b.textContent = label;
+      b.title = hint;
+      b.disabled = disabled;
+      b.addEventListener('click', act);
+      return b;
+    };
+    btns.append(
+      mk('置顶', '移到队首', () => moveSong(item.id, { to: 'top' }), 'warm', i === 0),
+      mk('↑', '上移一位', () => moveSong(item.id, { index: i - 1 }), '', i === 0),
+      mk('↓', '下移一位', () => moveSong(item.id, { index: i + 1 }), '', i === list.length - 1),
+      mk('×', '移出队列', () => removeSong(item.id), 'danger'),
+    );
+    li.append(title, by, btns);
+    ul.appendChild(li);
+  });
 }
 
 $('btnOpenStage').addEventListener('click', () => {

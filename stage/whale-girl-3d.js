@@ -49,6 +49,14 @@ export class WhaleGirlRenderer3D {
     this.mouthTarget = 0;
     this.happyUntil = 0;
     this.bounceUntil = 0;
+    this.bounceStart = 0;
+    this.bounceDur = 1400;
+    this.bowT0 = 0;
+    this.bowDur = 2400;
+    this.bowEnv = 0;
+    this.sadT0 = 0;
+    this.sadDur = 4200;
+    this.sadEnv = 0;
     this.nextBlink = 2 + Math.random() * 3;
     this.blinkStart = -1;
     this.viewYaw = 0;
@@ -75,8 +83,25 @@ export class WhaleGirlRenderer3D {
     const built = buildWhaleGirl(palette);
     this.root = built.root;
     this.nodes = built.nodes;
+    this.headY0 = this.nodes.head.position.y;
+    this.headZ0 = this.nodes.head.position.z;
     this.mats = built.mats;
     this.scene.add(this.root);
+
+    { // 无奈时太阳穴的汗滴，挂在头部节点里跟随头转动
+      const dropMat = new THREE.MeshStandardMaterial({
+        color: 0x9ad9ff,
+        roughness: 0.15,
+        metalness: 0.05,
+        transparent: true,
+        opacity: 0.9,
+      });
+      this.sadDrop = new THREE.Mesh(new THREE.SphereGeometry(0.05, 12, 12), dropMat);
+      this.sadDrop.scale.set(0.6, 1.35, 0.6);
+      this.sadDrop.position.set(0.33, 0.18, 0.29);
+      this.sadDrop.visible = false;
+      this.nodes.head.add(this.sadDrop);
+    }
 
     this._setupLights();
     this._setupBackdrop();
@@ -266,9 +291,45 @@ export class WhaleGirlRenderer3D {
 
   celebrate() {
     const now = performance.now();
+    this.bowT0 = 0;
+    this.sadT0 = 0;
     this.happyUntil = now + 2600;
-    this.bounceUntil = now + 1400;
+    this.bounceStart = now;
+    this.bounceDur = 1400;
+    this.bounceUntil = now + this.bounceDur;
     this._spawnHearts(14);
+  }
+
+  // 礼物：鞠躬（低头 + 上身前倾，约 2.4s）
+  bow() {
+    const now = performance.now();
+    this.bowT0 = now;
+    this.bowDur = 2400;
+    this.sadT0 = 0;
+    this.happyUntil = Math.max(this.happyUntil, now + 1400);
+    this.bounceStart = 0;
+    this.bounceUntil = 0;
+    this._spawnHearts(8);
+  }
+
+  // 点歌未找到：无奈闭眼 + 摇头
+  shakeHead() {
+    const now = performance.now();
+    this.sadT0 = now;
+    this.sadDur = 4200;
+    this.bowT0 = 0;
+    this.happyUntil = 0;
+    this.bounceStart = 0;
+    this.bounceUntil = 0;
+  }
+
+  _actionEnv(now, t0, dur, inFrac = 0.22, holdFrac = 0.58) {
+    if (!t0) return 0;
+    const p = (now - t0) / dur;
+    if (p <= 0 || p >= 1) return 0;
+    if (p < inFrac) return p / inFrac;
+    if (p < holdFrac) return 1;
+    return 1 - (p - holdFrac) / (1 - holdFrac);
   }
 
   _spawnHearts(count) {
@@ -329,10 +390,13 @@ export class WhaleGirlRenderer3D {
     const thinking = this.mode === 'thinking';
     const speaking = this.mode === 'speaking';
 
+    this.bowEnv = this._actionEnv(now, this.bowT0, this.bowDur, 0.26, 0.4);
+    this.sadEnv = this._actionEnv(now, this.sadT0, this.sadDur, 0.14, 0.64);
+
     const k = 1 - Math.exp(-dt * 18);
     this.mouth += (this.mouthTarget - this.mouth) * k;
-    nodes.mouthOpen.scale.y = 0.38 + this.mouth * 0.8;
-    nodes.mouthOpen.scale.x = 1 + this.mouth * 0.08;
+    nodes.mouthOpen.scale.y = clamp(0.38 + this.mouth * 0.62, 0.38, 1.02) * (1 - this.sadEnv * 0.3);
+    nodes.mouthOpen.scale.x = 1 + this.mouth * 0.06 + this.sadEnv * 0.08;
 
     if (this.blinkStart < 0 && t > this.nextBlink) {
       this.blinkStart = t;
@@ -348,6 +412,7 @@ export class WhaleGirlRenderer3D {
       }
     }
     if (happy) blink = Math.min(blink, 0.12);
+    if (this.sadEnv > 0.05) blink = Math.min(blink, 0.2);
     nodes.eyeL.scale.y = blink;
     nodes.eyeR.scale.y = blink;
 
@@ -358,16 +423,32 @@ export class WhaleGirlRenderer3D {
     );
 
     let jump = 0;
-    if (now < this.bounceUntil) {
-      const p = 1 - (this.bounceUntil - now) / 1400;
+    if (this.bounceStart && now < this.bounceUntil) {
+      const p = clamp((now - this.bounceStart) / this.bounceDur, 0, 1);
       jump = Math.sin(p * Math.PI) * 0.14;
     }
-    this.root.position.y = Math.sin(t * 1.2) * 0.014 + jump;
+    this.root.position.y = Math.sin(t * 1.2) * 0.014 + jump - this.bowEnv * 0.035;
     this.root.rotation.y = this.viewYaw + Math.sin(t * 0.4) * 0.03;
+    if (nodes.body) nodes.body.rotation.x = this.bowEnv * 0.12 - this.sadEnv * 0.03;
 
-    nodes.head.rotation.x = Math.sin(t * 0.9) * 0.02 - (thinking ? 0.07 : 0) + Math.sin(t * 3) * 0.008 * this.mouth;
-    nodes.head.rotation.y = Math.sin(t * 0.55) * 0.04 + (thinking ? 0.09 : 0);
-    nodes.head.rotation.z = Math.sin(t * 0.7) * 0.015 + (thinking ? 0.1 : 0);
+    const sadShakeY = this.sadEnv > 0.001
+      ? Math.sin((now / 1000) * TAU * 2.1) * 0.16 * this.sadEnv
+      : 0;
+    nodes.head.rotation.x = Math.sin(t * 0.9) * 0.02 - (thinking ? 0.07 : 0) + Math.sin(t * 3) * 0.008 * this.mouth
+      + this.bowEnv * 0.34;
+    nodes.head.rotation.y = Math.sin(t * 0.55) * 0.04 + (thinking ? 0.09 : 0) + sadShakeY;
+    nodes.head.rotation.z = Math.sin(t * 0.7) * 0.015 + (thinking ? 0.1 : 0) - this.sadEnv * 0.03;
+    nodes.head.position.y = this.headY0 - this.bowEnv * 0.02;
+    nodes.head.position.z = this.headZ0 + this.bowEnv * 0.26;
+
+    if (this.sadDrop) {
+      this.sadDrop.visible = this.sadEnv > 0.05;
+      if (this.sadDrop.visible) {
+        const tSad = Math.max(0, (now - this.sadT0) / 1000);
+        this.sadDrop.position.y = 0.18 - Math.min(0.07, tSad * 0.035) + Math.sin(tSad * 5) * 0.004;
+        this.sadDrop.material.opacity = 0.9 * Math.min(1, this.sadEnv * 1.4);
+      }
+    }
 
     nodes.sideLockL.rotation.z = nodes.sideLockL.userData.rest.rot.z + Math.sin(t * 1.1) * 0.035;
     nodes.sideLockL.rotation.x = nodes.sideLockL.userData.rest.rot.x + Math.sin(t * 0.9) * 0.03;

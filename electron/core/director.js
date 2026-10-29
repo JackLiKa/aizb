@@ -260,6 +260,8 @@ class Director {
       return;
     }
     if (!ev.song) {
+      // 点歌失败：无奈表情 + 摇头，再解释没找到
+      this.send({ type: 'emote', name: 'sad', event: { kind: 'song-not-found', query: ev.query, user: ev.user } });
       await this._talk(ev);
       return;
     }
@@ -578,6 +580,11 @@ class Director {
       status: this.getStatus(),
     };
     this.send({ type: 'overlay', data });
+  }
+
+  // 后台手动调整队列后立即刷新舞台叠层，不用等 5s 轮询
+  refreshOverlay() {
+    this._broadcastOverlay();
   }
 
   getStatus() {

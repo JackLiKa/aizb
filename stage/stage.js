@@ -251,10 +251,15 @@ function handle(msg) {
     case 'state':
       applyState(msg.state);
       break;
-    case 'emote':
-      avatar.celebrate();
+    case 'emote': {
+      // name 缺省按开心处理；渲染器可能没有新动作（旧打包产物），回退到 celebrate
+      const name = msg.name || 'happy';
+      if (name === 'gift' && typeof avatar.bow === 'function') avatar.bow();
+      else if (name === 'sad' && typeof avatar.shakeHead === 'function') avatar.shakeHead();
+      else avatar.celebrate();
       if (msg.event) showGiftBanner(msg.event);
       break;
+    }
     case 'music':
       audio.playMusic(msg);
       setNowPlaying({ title: msg.title, artist: msg.artist });

@@ -133,9 +133,9 @@ async function main() {
       const r = await send('Runtime.evaluate', { expression: String(evalJs), returnByValue: true }, sessionId);
       if (r.exceptionDetails) console.log('eval error:', r.exceptionDetails.text);
       else if (r.result?.value !== undefined) console.log('eval ->', JSON.stringify(r.result.value));
-      await sleep(900);
+      await sleep(Number(arg('evalWait', 900)));
     }
-    await sleep(1200);
+    await sleep(Number(arg('settle', 1200)));
 
     const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }, sessionId);
     fs.writeFileSync(out, Buffer.from(shot.data, 'base64'));

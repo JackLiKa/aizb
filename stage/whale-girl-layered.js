@@ -66,6 +66,15 @@ export class LayeredGirlRenderer {
     this.bubbles = [];
     this.happyUntil = 0;
     this.bounceUntil = 0;
+    this.bounceStart = 0;
+    this.bounceDur = 1400;
+    this.bounceAmp = 16;
+    this.bowT0 = 0;
+    this.bowDur = 2400;
+    this.bowEnv = 0;
+    this.sadT0 = 0;
+    this.sadDur = 4200;
+    this.sadEnv = 0;
     this._lastNoteAt = 0;
     this.palette = { fin: palette.finColor || '#6f8fe0' };
     this.w = 1280;
@@ -155,9 +164,54 @@ export class LayeredGirlRenderer {
   }
 
   celebrate() {
-    this.happyUntil = performance.now() + 2600;
-    this.bounceUntil = performance.now() + 1400;
+    const now = performance.now();
+    this.bowT0 = 0;
+    this.sadT0 = 0;
+    this.happyUntil = now + 2600;
+    this.bounceStart = now;
+    this.bounceDur = 1400;
+    this.bounceAmp = 16;
+    this.bounceUntil = now + this.bounceDur;
     this._spawnBurst(36);
+  }
+
+  // 礼物：低头鞠躬，持续约 2.4s（下压 → 停顿 → 起身）
+  bow() {
+    const now = performance.now();
+    this.bowT0 = now;
+    this.bowDur = 2400;
+    this.sadT0 = 0;
+    this.happyUntil = Math.max(this.happyUntil, now + 1400);
+    this.bounceStart = 0;
+    this.bounceUntil = 0;
+    this._spawnBurst(18);
+  }
+
+  // 点歌未找到：无奈脸 + 摇头
+  shakeHead() {
+    const now = performance.now();
+    this.sadT0 = now;
+    this.sadDur = 4200;
+    this.bowT0 = 0;
+    this.happyUntil = 0;
+    this.bounceStart = 0;
+    this.bounceUntil = 0;
+  }
+
+  // 0→1→0 的动作包络：p 比例内快速进入，末尾平滑退出
+  _actionEnv(now, t0, dur, inFrac = 0.22, holdFrac = 0.58) {
+    if (!t0) return 0;
+    const p = (now - t0) / dur;
+    if (p <= 0 || p >= 1) return 0;
+    if (p < inFrac) return p / inFrac;
+    if (p < holdFrac) return 1;
+    return 1 - (p - holdFrac) / (1 - holdFrac);
+  }
+
+  _hop(now) {
+    if (!this.bounceStart || now >= this.bounceUntil) return 0;
+    const p = clamp((now - this.bounceStart) / this.bounceDur, 0, 1);
+    return Math.sin(p * Math.PI) * this.bounceAmp;
   }
 
   _seedBubbles() {
@@ -193,6 +247,9 @@ export class LayeredGirlRenderer {
   }
 
   update(dt, now) {
+    this.bowEnv = this._actionEnv(now, this.bowT0, this.bowDur, 0.26, 0.4);
+    this.sadEnv = this._actionEnv(now, this.sadT0, this.sadDur, 0.14, 0.64);
+
     this.mouth += (this.mouthTarget - this.mouth) * Math.min(1, dt * 16);
     if (this.mode !== 'speaking') this.mouthTarget *= Math.pow(0.002, dt);
     if (this.mode !== 'speaking' && this.mouth < 0.01) this.mouth = 0;
@@ -273,12 +330,18 @@ export class LayeredGirlRenderer {
       this.blinkT = 0;
       this.doubleBlink = true;
     }
-    if (kind === 'shiver') this.bounceUntil = Math.max(this.bounceUntil, now + 620);
+    if (kind === 'shiver') {
+      this.bounceStart = now;
+      this.bounceDur = 620;
+      this.bounceAmp = 3;
+      this.bounceUntil = now + 620;
+    }
   }
 
   _updateIdle(dt, now) {
     const target = this.idleTarget;
-    if (this.mode !== 'idle') {
+    const acting = this.bowEnv > 0.01 || this.sadEnv > 0.01;
+    if (this.mode !== 'idle' || acting) {
       this.idleAction = null;
       this.doubleBlink = false;
       target.x = 0;
@@ -364,9 +427,9 @@ export class LayeredGirlRenderer {
     this._drawBackground(ctx, w, h);
     this._drawBubbles(ctx, w, h);
 
-    const bounce = now < this.bounceUntil
-      ? Math.sin((this.bounceUntil - now) / 130) * ((this.bounceUntil - now) / 130) * 16
-      : 0;
+    // 弹跳必须是有界的地面起跳：旧公式 sin(x)*x*16 会冲到 ±100px，
+    // 把整只角色顶出画面（看起来像动作穿模/瞬移）
+    const bounce = this._hop(now);
     const s = Math.min((h * 0.92) / this.sh, (w * 0.52) / this.sw);
     const cw = this.sw * s;
     const ch = this.sh * s;
@@ -384,6 +447,10 @@ export class LayeredGirlRenderer {
     ctx.translate(cx, baseY);
     ctx.rotate(sway);
     ctx.scale(breathX, breathY);
+    if (this.bowEnv > 0.001) {
+      ctx.translate(0, this.bowEnv * 8);
+      ctx.scale(1, 1 - this.bowEnv * 0.055);
+    }
     ctx.translate(-cw / 2, -ch);
     ctx.scale(s, s);
 
@@ -394,8 +461,18 @@ export class LayeredGirlRenderer {
     if (this.mode === 'thinking') tilt -= 0.052;
     if (this.mode === 'singing') tilt += Math.sin(this.t * 2.1) * 0.014;
     if (now < this.happyUntil) tilt += Math.sin((this.happyUntil - now) / 110) * 0.02;
-    const headBob = Math.sin(this.t * 1.45 + 0.9) * 1.6 + this.idle.y;
-    const headPan = this.idle.x;
+    const sadShake = this.sadEnv > 0.001
+      ? Math.sin(((now - this.sadT0) / 1000) * Math.PI * 2 * 2.1) * 0.055 * this.sadEnv
+      : 0;
+    if (this.sadEnv > 0.001) tilt += sadShake + 0.02 * this.sadEnv;
+    if (this.bowEnv > 0.001) tilt += this.bowEnv * 0.085;
+    // 头绕颈根旋转，限幅避免发梢/下巴把脖子或衣服撕开
+    tilt = clamp(tilt, -0.09, 0.09);
+    const headBob = Math.sin(this.t * 1.45 + 0.9) * 1.6 + this.idle.y
+      + this.bowEnv * 34 + this.sadEnv * 2.5;
+    const headPan = this.idle.x + (this.sadEnv > 0.001
+      ? Math.sin(((now - this.sadT0) / 1000) * Math.PI * 2 * 2.1) * 2.4 * this.sadEnv
+      : 0);
 
     ctx.save();
     ctx.translate(px + headPan, py + headBob);
@@ -427,19 +504,82 @@ export class LayeredGirlRenderer {
       const srcH = Math.min(mh, iy1 + 2);
       const scaleY = 0.82 + this.mouthStretch * mouthOpen;
       const k = mouthOpen * mouthOpen * (3 - 2 * mouthOpen);
-      const dw = mw * (1 + 0.10 * mouthOpen);
-      const dx = bx + midX - (midX * dw) / mw;
+      const dw = mw * (1 + 0.06 * mouthOpen);
+      const dx = bx - (dw - mw) / 2;
       const dy = by + iy0 * (1 - scaleY);
+      // 裁剪到嘴部补丁内：张嘴再大也不会压到下巴/领结
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(bx, by, mw, mh);
+      ctx.clip();
       ctx.globalAlpha = k;
       ctx.drawImage(this.mouthOpenImg, 0, 0, mw, srcH, dx, dy, dw, srcH * scaleY);
-      ctx.globalAlpha = 1;
+      ctx.restore();
     }
+    if (this.sadEnv > 0.02) this._drawSadFace(ctx, this.sadEnv, now, mouthOpen > 0.05);
     ctx.restore();
     ctx.restore();
 
     this._drawNotes(ctx, cx, baseY - ch * 0.86);
     this._drawParticles(ctx, cx, baseY - ch * 0.55);
     if (this.mode === 'thinking') this._drawThinking(ctx, cx + cw * 0.34, baseY - ch * 0.93);
+  }
+
+  // 无奈表情：闭眼 + 嘴角下压 + 太阳穴汗滴（全部画在头部坐标系内，跟随头部旋转）
+  _drawSadFace(ctx, k, now, talking) {
+    const skin = this.meta.skin || [247, 210, 205];
+    const skinCss = `rgb(${skin[0]}, ${skin[1]}, ${skin[2]})`;
+    const t = (now - this.sadT0) / 1000;
+
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, k * 2.2);
+    for (const side of ['left', 'right']) {
+      const b = this.meta.eyes[side].box;
+      ctx.drawImage(this.eyeImgs[side], b[0], b[1], b[2] - b[0], b[3] - b[1]);
+    }
+    ctx.restore();
+
+    if (!talking) {
+      const [mx0, my0, mx1, my1] = this.mouthBox;
+      const cx = (mx0 + mx1) / 2;
+      const cy = (my0 + my1) / 2 + 2;
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, k * 1.8);
+      ctx.fillStyle = skinCss;
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, (mx1 - mx0) * 0.42, (my1 - my0) * 0.30, 0, 0, TAU);
+      ctx.fill();
+      ctx.globalAlpha = 0.85 * k;
+      ctx.strokeStyle = 'rgba(138, 74, 88, 0.9)';
+      ctx.lineWidth = 1.5;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(cx - 6.5, cy + 1.6);
+      ctx.quadraticCurveTo(cx, cy - 3.2, cx + 6.5, cy + 1.6);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    const dx = this.mouthBox[2] + 40;
+    const dy = 140 + Math.min(7, t * 3.2) + Math.sin(t * 4) * 0.8;
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, k * 1.05);
+    const g = ctx.createLinearGradient(dx, dy - 8, dx, dy + 7);
+    g.addColorStop(0, 'rgba(225, 246, 255, 0.95)');
+    g.addColorStop(0.55, 'rgba(150, 212, 255, 0.9)');
+    g.addColorStop(1, 'rgba(96, 168, 235, 0.85)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.moveTo(dx, dy - 8);
+    ctx.bezierCurveTo(dx + 5.5, dy - 1.5, dx + 5, dy + 5.5, dx, dy + 6.5);
+    ctx.bezierCurveTo(dx - 5, dy + 5.5, dx - 5.5, dy - 1.5, dx, dy - 8);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.75)';
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.ellipse(dx - 1.6, dy + 1.5, 1.5, 2.4, -0.4, 0, TAU);
+    ctx.stroke();
+    ctx.restore();
   }
 
   _drawBackground(ctx, w, h) {

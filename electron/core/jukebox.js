@@ -241,6 +241,21 @@ class Jukebox {
     return true;
   }
 
+  // 手动调整队列顺序：{ index } 或 { to: 'top' | 'bottom' }
+  move(id, { index, to } = {}) {
+    const from = this.queue.findIndex((x) => x.id === id);
+    if (from < 0) return { ok: false, reason: 'not-found' };
+    let target = Number.isFinite(index) ? Math.trunc(index) : NaN;
+    if (to === 'top') target = 0;
+    else if (to === 'bottom') target = this.queue.length - 1;
+    if (!Number.isFinite(target)) return { ok: false, reason: 'bad-target' };
+    target = Math.max(0, Math.min(this.queue.length - 1, target));
+    if (target === from) return { ok: true, index: from };
+    const [item] = this.queue.splice(from, 1);
+    this.queue.splice(target, 0, item);
+    return { ok: true, index: target };
+  }
+
   clear() {
     this.queue = [];
   }
@@ -249,7 +264,7 @@ class Jukebox {
     return {
       total: this.index.length,
       current: this.current ? { id: this.current.id, title: this.current.song.title, artist: this.current.song.artist, by: this.current.by } : null,
-      queue: this.queue.slice(0, 8).map((x) => ({ id: x.id, title: x.song.title, artist: x.song.artist, by: x.by })),
+      queue: this.queue.map((x) => ({ id: x.id, title: x.song.title, artist: x.song.artist, by: x.by })),
     };
   }
 
