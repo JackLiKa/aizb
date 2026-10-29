@@ -57,16 +57,27 @@ class JamendoProvider {
 
   async search(query, { limit = 12, commercialOnly = true } = {}) {
     if (!this.configured) return [];
+    // 服务端没有可商用许可过滤，热门词里 CC BY 占比很低，需要拉大候选窗口再筛
     const params = new URLSearchParams({
       client_id: this.clientId,
       format: 'json',
-      limit: String(Math.min(50, Math.max(limit * 2, 12))),
+      limit: String(Math.min(200, Math.max(limit * 8, 80))),
       include: 'licenses',
       audioformat: 'mp32',
       order: query ? 'relevance' : 'popularity_month',
     });
     if (query) params.set('search', query);
-    const data = await fetchJson(`https://api.jamendo.com/v3.0/tracks/?${params}`);
+    const url = `https://api.jamendo.com/v3.0/tracks/?${params}`;
+    let songs = this._pick(await fetchJson(url), limit, commercialOnly);
+    // Jamendo 偶发返回空列表，重试一次，避免把空结果缓存十分钟
+    if (!songs.length && query) {
+      await new Promise((r) => setTimeout(r, 400));
+      songs = this._pick(await fetchJson(url), limit, commercialOnly);
+    }
+    return songs;
+  }
+
+  _pick(data, limit, commercialOnly) {
     const tracks = Array.isArray(data.results) ? data.results : [];
     return tracks
       .filter((t) => t && t.audio && (!commercialOnly || isCommercialLicense(t.license_ccurl)))
@@ -188,7 +199,7 @@ class MusicProviders {
     const commercialOnly = this.config.jukebox.commercialOnly !== false;
     const key = `${mode}|${commercialOnly ? 1 : 0}|${String(query || '').trim().toLowerCase()}|${limit}`;
     const hit = this.cache.get(key);
-    if (hit && Date.now() - hit.at < SEARCH_CACHE_MS) return hit.songs;
+    if (hit && Date.now() - hit.at < (hit.ttl || SEARCH_CACHE_MS)) return hit.songs;
 
     let songs = [];
     if (mode === 'archive') {
@@ -203,7 +214,7 @@ class MusicProviders {
       if (arc.status === 'rejected') this.logger?.warn?.('Archive 搜索失败', { error: arc.reason?.message });
       songs = [...(jam.status === 'fulfilled' ? jam.value : []), ...(arc.status === 'fulfilled' ? arc.value : [])];
     }
-    this.cache.set(key, { at: Date.now(), songs });
+    this.cache.set(key, { at: Date.now(), songs, ttl: songs.length ? SEARCH_CACHE_MS : 60 * 1000 });
     if (this.cache.size > 50) this.cache.delete(this.cache.keys().next().value);
     return songs;
   }
