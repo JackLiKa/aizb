@@ -53,11 +53,15 @@
         "portable"
       ],
       "icon": "build/icon.ico",
-      "artifactName": "dyzb-${version}-${arch}-${target}.${ext}"
+      "artifactName": "dyzb-${version}-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "dyzb-${version}-${arch}-setup.${ext}"
+    },
+    "portable": {
+      "artifactName": "dyzb-${version}-${arch}-portable.${ext}"
     }
   }
 }
