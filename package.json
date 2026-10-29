@@ -1,7 +1,7 @@
 {
   "name": "dyzb",
   "productName": "大肥鱼直播",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "AI 虚拟形象陪伴直播桌面端",
   "main": "electron/main.js",
