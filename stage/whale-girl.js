@@ -251,7 +251,7 @@ export class WhaleGirlRenderer {
     this.bowEnv = this._bowCurve(now);
     this.sadEnv = this._actionEnv(now, this.sadT0, this.sadDur, 0.12, 0.66);
     if (this.sadEnv > 0.001) {
-      this.sadPhase += dt * TAU * 2.1;
+      this.sadPhase += dt * TAU * 1.15;
       this.sadShakeAmp += (1 - this.sadShakeAmp) * Math.min(1, dt * 3.2);
     } else {
       this.sadPhase = 0;
@@ -321,7 +321,8 @@ export class WhaleGirlRenderer {
     ctx.translate(cx, cy);
     ctx.scale(scale, scale);
     const tilt = Math.sin(this.t * 0.8) * 0.014;
-    const sadShake = Math.sin(this.sadPhase) * 0.07 * this.sadEnv * this.sadShakeAmp;
+    const sadP = this.sadDur ? clamp((now - this.sadT0) / this.sadDur, 0, 1) : 1;
+    const sadShake = Math.sin(this.sadPhase) * 0.020 * this.sadEnv * this.sadShakeAmp * (1 - 0.35 * sadP);
     const bob = Math.sin(this.t * 1.15) * 5 - bounce * 0.15 + this.bowEnv * 10 + this.sadEnv * 2;
     const hopE = this.bounceAmp ? clamp(bounce / this.bounceAmp, 0, 1) : 0;
     ctx.translate(0, bob);

@@ -295,7 +295,7 @@ export class LayeredGirlRenderer {
     const bowTarget = Math.max(0, this.bowEnv);
     this.bowHead += (bowTarget - this.bowHead) * Math.min(1, dt * 9);
     if (this.sadEnv > 0.001) {
-      this.sadPhase += dt * TAU * 2.1;
+      this.sadPhase += dt * TAU * 1.15;
       this.sadShakeAmp += (1 - this.sadShakeAmp) * Math.min(1, dt * 3.2);
     } else {
       this.sadPhase = 0;
@@ -370,9 +370,9 @@ export class LayeredGirlRenderer {
   // 待机时每隔几秒挑一个随机小动作，让形象自己「活」起来：
   // 张望、歪头、点头、哼歌动嘴、轻颤、连眨。说话/唱歌/思考时自动让位。
   _startIdleAction(now) {
-    const pool = ['glance', 'glance', 'glance', 'tilt', 'nod', 'hum', 'shiver', 'blink2'];
+    const pool = ['glance', 'glance', 'glance', 'tilt', 'nod', 'hum', 'sway', 'blink2'];
     const kind = pool[Math.floor(Math.random() * pool.length)];
-    const dur = { glance: 1.8, tilt: 2.2, nod: 1.4, hum: 1.3, shiver: 1.0, blink2: 0.45 }[kind];
+    const dur = { glance: 1.8, tilt: 2.2, nod: 1.4, hum: 1.3, sway: 2.6, blink2: 0.45 }[kind];
     this.idleAction = {
       kind,
       t0: this.t,
@@ -383,12 +383,6 @@ export class LayeredGirlRenderer {
     if (kind === 'blink2') {
       this.blinkT = 0;
       this.doubleBlink = true;
-    }
-    if (kind === 'shiver') {
-      this.bounceStart = now;
-      this.bounceDur = 620;
-      this.bounceAmp = 3;
-      this.bounceUntil = now + 620;
     }
   }
 
@@ -424,10 +418,10 @@ export class LayeredGirlRenderer {
           target.y = Math.sin(p * Math.PI * 4) * 3.0 * (1 - p);
           target.x = 0;
           target.tilt = Math.sin(p * Math.PI * 2) * 0.010 * (1 - p);
-        } else if (a.kind === 'shiver') {
-          target.x = Math.sin(this.t * 24) * 1.2 * (1 - p);
-          target.y = 0;
-          target.tilt = Math.sin(this.t * 19 + a.seed) * 0.010 * (1 - p);
+        } else if (a.kind === 'sway') {
+          target.x = Math.sin(p * Math.PI * 2) * a.dir * 1.8 * env;
+          target.y = 0.4 * env;
+          target.tilt = Math.sin(p * Math.PI * 2) * a.dir * 0.014 * env;
         } else {
           target.x = 0;
           target.y = 0;
@@ -495,7 +489,11 @@ export class LayeredGirlRenderer {
     const breath = Math.sin(this.t * 1.45);
     const breathX = 1 + 0.0025 * breath;
     const breathY = 1 + 0.004 * breath;
-    const sway = Math.sin(this.t * 0.62) * 0.010 + Math.sin(this.t * 0.23 + 1.1) * 0.004;
+    // 摇头：先大后小地衰减，身体反向轻带一点，脖子才不会像被甩脱
+    const sadP = this.sadDur ? clamp((now - this.sadT0) / this.sadDur, 0, 1) : 1;
+    const sadWave = Math.sin(this.sadPhase) * this.sadEnv * this.sadShakeAmp * (1 - 0.5 * sadP);
+    const sway = Math.sin(this.t * 0.62) * 0.010 + Math.sin(this.t * 0.23 + 1.1) * 0.004
+      - sadWave * 0.004;
     // 起跳时轻微拉伸、落地回弹，让弹跳有重量感
     const hopE = this.bounceAmp ? clamp(bounce / this.bounceAmp, 0, 1) : 0;
     const hopStretch = 1 + 0.035 * hopE;
@@ -522,19 +520,23 @@ export class LayeredGirlRenderer {
       const fade = clamp((this.happyUntil - now) / 1200, 0, 1);
       tilt += Math.sin(hp * TAU * 1.7) * 0.018 * fade;
     }
-    const sadShake = Math.sin(this.sadPhase) * 0.075 * this.sadEnv * this.sadShakeAmp;
-    if (this.sadEnv > 0.001) tilt += sadShake + 0.015 * this.sadEnv;
+    const sadShake = Math.sin(this.sadPhase - 0.45) * 0.022 * this.sadEnv * this.sadShakeAmp * (1 - 0.5 * sadP);
+    if (this.sadEnv > 0.001) tilt += sadShake + 0.012 * this.sadEnv;
     if (this.bowHead > 0.001) tilt += this.bowHead * 0.052;
     // 头绕颈根旋转，限幅避免发梢/下巴把脖子或衣服撕开
     tilt = clamp(tilt, -0.095, 0.095);
     const headBob = Math.sin(this.t * 1.45 + 0.9) * 1.6 + this.idle.y
-      + this.bowHead * 40 + this.sadEnv * 2.5
-      + Math.sin(this.sadPhase * 2) * 1.1 * this.sadEnv * this.sadShakeAmp;
-    const headPan = this.idle.x + Math.sin(this.sadPhase) * 4.5 * this.sadEnv * this.sadShakeAmp;
+      + this.bowHead * 40 + this.sadEnv * 1.4;
+    const headPan = this.idle.x + sadWave * 3.0;
+    // 2D 没有转头帧：用绕颈根的横向剪切伪造“转头”，头顶摆幅大于下巴，脖子不会脱开
+    const headShear = sadWave * 0.095;
+    // 难过时让原嘴淡出、只留画在干净皮肤上的小撇嘴，避免叠出“补丁嘴”
+    const sadMouth = clamp((this.sadEnv - 0.3) / 0.4, 0, 1);
 
     ctx.save();
     ctx.translate(px + headPan, py + headBob);
     ctx.rotate(tilt);
+    ctx.transform(1, 0, headShear, 1, 0, 0);
     ctx.translate(-px, -py);
     ctx.drawImage(this.headImg, 0, 0);
 
@@ -552,9 +554,20 @@ export class LayeredGirlRenderer {
     const mh = my1 - my0 + this.mouthPad * 2;
     const bx = mx0 - this.mouthPad;
     const by = my0 - this.mouthPad;
+    ctx.globalAlpha = 1 - sadMouth;
     ctx.drawImage(this.mouthClosedImg, bx, by, mw, mh);
+    ctx.globalAlpha = 1;
+    // 底图自带张嘴，闭嘴贴片是它的遮罩；难过时不淡出（会露出底图），而是把贴片上下翻转 → 同画风的撇嘴
+    if (sadMouth > 0.001) {
+      ctx.save();
+      ctx.translate(bx, by + mh);
+      ctx.scale(1, -1);
+      ctx.globalAlpha = sadMouth;
+      ctx.drawImage(this.mouthClosedImg, 0, 0, mw, mh);
+      ctx.restore();
+    }
     const mouthOpen = Math.max(this.mouth, this.idleMouth);
-    if (mouthOpen > 0.03) {
+    if (mouthOpen > 0.03 && sadMouth < 0.5) {
       const [ix0, iy0, ix1, iy1] = this.mouthInner;
       const midX = (ix0 + ix1) / 2;
       // drop the jaw from the upper lip; the extra skin below the lip is
@@ -585,8 +598,6 @@ export class LayeredGirlRenderer {
 
   // 无奈表情：闭眼 + 嘴角下压 + 太阳穴汗滴（全部画在头部坐标系内，跟随头部旋转）
   _drawSadFace(ctx, k, now, talking) {
-    const skin = this.meta.skin || [247, 210, 205];
-    const skinCss = `rgb(${skin[0]}, ${skin[1]}, ${skin[2]})`;
     const t = (now - this.sadT0) / 1000;
 
     ctx.save();
@@ -600,20 +611,15 @@ export class LayeredGirlRenderer {
     if (!talking) {
       const [mx0, my0, mx1, my1] = this.mouthBox;
       const cx = (mx0 + mx1) / 2;
-      const cy = (my0 + my1) / 2 + 2;
+      const cy = (my0 + my1) / 2 + 1;
       ctx.save();
-      ctx.globalAlpha = Math.min(1, k * 1.8);
-      ctx.fillStyle = skinCss;
-      ctx.beginPath();
-      ctx.ellipse(cx, cy, (mx1 - mx0) * 0.42, (my1 - my0) * 0.30, 0, 0, TAU);
-      ctx.fill();
-      ctx.globalAlpha = 0.85 * k;
-      ctx.strokeStyle = 'rgba(138, 74, 88, 0.9)';
-      ctx.lineWidth = 1.5;
+      ctx.globalAlpha = Math.min(1, k * 0.55);
+      ctx.strokeStyle = 'rgba(146, 78, 92, 0.75)';
+      ctx.lineWidth = 1.3;
       ctx.lineCap = 'round';
       ctx.beginPath();
-      ctx.moveTo(cx - 6.5, cy + 1.6);
-      ctx.quadraticCurveTo(cx, cy - 3.2, cx + 6.5, cy + 1.6);
+      ctx.moveTo(cx - 4.2, cy + 1.4);
+      ctx.quadraticCurveTo(cx, cy - 1.4, cx + 4.2, cy + 2.2);
       ctx.stroke();
       ctx.restore();
     }
