@@ -129,6 +129,11 @@ export class LayeredGirlRenderer {
     this.tailY = meta.tail?.y ?? 0;
     this.tailAmp = meta.tail?.amp ?? 0;
     this.tailPivot = meta.tail?.pivot ?? 180;
+    // 头部每帧先合成到离屏贴片，再整片做圆柱投影，五官才会跟着一起转
+    this.headBuf = document.createElement('canvas');
+    this.headBuf.width = head.width;
+    this.headBuf.height = head.height;
+    this.headCtx = this.headBuf.getContext('2d');
     this.ready = true;
   }
 
@@ -295,8 +300,9 @@ export class LayeredGirlRenderer {
     const bowTarget = Math.max(0, this.bowEnv);
     this.bowHead += (bowTarget - this.bowHead) * Math.min(1, dt * 9);
     if (this.sadEnv > 0.001) {
-      this.sadPhase += dt * TAU * 1.15;
-      this.sadShakeAmp += (1 - this.sadShakeAmp) * Math.min(1, dt * 3.2);
+      // 真人的“不行”是 2~3 下就停，不是连续摆 4 秒
+      this.sadPhase += dt * TAU * 2.15;
+      this.sadShakeAmp += (1 - this.sadShakeAmp) * Math.min(1, dt * 6);
     } else {
       this.sadPhase = 0;
       this.sadShakeAmp += (0 - this.sadShakeAmp) * Math.min(1, dt * 4.5);
@@ -468,6 +474,103 @@ export class LayeredGirlRenderer {
     ctx.restore();
   }
 
+  // 头 + 眨眼 + 口型 + 无奈表情先合成到同一张贴片，再整体变形；
+  // 分开画的话五官不会跟着头部一起转，看着像贴纸浮在脸上。
+  _composeHead(now, sadMouth, mouthOpen) {
+    const bctx = this.headCtx;
+    const W = this.headBuf.width;
+    const H = this.headBuf.height;
+    bctx.setTransform(1, 0, 0, 1, 0, 0);
+    bctx.clearRect(0, 0, W, H);
+    bctx.drawImage(this.headImg, 0, 0);
+
+    if (this.blink > 0.01) {
+      bctx.globalAlpha = this.blink;
+      for (const side of ['left', 'right']) {
+        const b = this.meta.eyes[side].box;
+        bctx.drawImage(this.eyeImgs[side], b[0], b[1], b[2] - b[0], b[3] - b[1]);
+      }
+      bctx.globalAlpha = 1;
+    }
+
+    const [mx0, my0, mx1, my1] = this.mouthBox;
+    const mw = mx1 - mx0 + this.mouthPad * 2;
+    const mh = my1 - my0 + this.mouthPad * 2;
+    const bx = mx0 - this.mouthPad;
+    const by = my0 - this.mouthPad;
+    bctx.globalAlpha = 1 - sadMouth;
+    bctx.drawImage(this.mouthClosedImg, bx, by, mw, mh);
+    bctx.globalAlpha = 1;
+    // 底图自带张嘴，闭嘴贴片是它的遮罩；难过时不淡出（会露出底图），而是把贴片上下翻转 → 同画风的撇嘴
+    if (sadMouth > 0.001) {
+      bctx.save();
+      bctx.translate(bx, by + mh);
+      bctx.scale(1, -1);
+      bctx.globalAlpha = sadMouth;
+      bctx.drawImage(this.mouthClosedImg, 0, 0, mw, mh);
+      bctx.restore();
+    }
+    if (mouthOpen > 0.03 && sadMouth < 0.5) {
+      const [ix0, iy0, ix1, iy1] = this.mouthInner;
+      // drop the jaw from the upper lip; the extra skin below the lip is
+      // cropped off so a full stretch never reaches the collar bow
+      const srcH = Math.min(mh, iy1 + 2);
+      const scaleY = 0.82 + this.mouthStretch * mouthOpen;
+      const k = mouthOpen * mouthOpen * (3 - 2 * mouthOpen);
+      const dw = mw * (1 + 0.06 * mouthOpen);
+      const dx = bx - (dw - mw) / 2;
+      const dy = by + iy0 * (1 - scaleY);
+      bctx.save();
+      bctx.beginPath();
+      bctx.rect(bx, by, mw, mh);
+      bctx.clip();
+      bctx.globalAlpha = k;
+      bctx.drawImage(this.mouthOpenImg, 0, 0, mw, srcH, dx, dy, dw, srcH * scaleY);
+      bctx.restore();
+    }
+    if (this.sadEnv > 0.02) this._drawSadFace(bctx, this.sadEnv, now, mouthOpen > 0.05);
+    return this.headBuf;
+  }
+
+  // 把合成好的头按圆柱面展开：中间位移大、两侧位移小并横向压缩，
+  // 读起来是“脸转过去了”而不是整张图被拉斜；接缝以下权重为 0，脖子不动。
+  _blitHead(ctx, buf, yaw) {
+    const W = buf.width;
+    const H = buf.height;
+    if (Math.abs(yaw) < 0.0015) {
+      ctx.drawImage(buf, 0, 0);
+      return;
+    }
+    const cx = 196;
+    const R = 200;
+    const cols = 30;
+    const rows = 12;
+    const cw = W / cols;
+    const ch = H / rows;
+    // 素材颈部接缝在 y=230；留 6px 余量让下巴完整跟着转，再向下 smoothstep 归零
+    const fadeStart = 208;
+    const fadeEnd = 236;
+    const margin = 0.6;
+    for (let r = 0; r < rows; r += 1) {
+      const sy = r * ch;
+      const wgt = smoothstep((fadeEnd - (sy + ch * 0.5)) / (fadeEnd - fadeStart));
+      if (wgt <= 0.001) {
+        ctx.drawImage(buf, 0, sy, W, ch + margin, 0, sy, W, ch + margin);
+        continue;
+      }
+      for (let c = 0; c < cols; c += 1) {
+        const sx = c * cw;
+        const a = Math.asin(clamp((sx + cw * 0.5 - cx) / R, -0.999, 0.999));
+        const a2 = a + yaw * wgt;
+        const scaleX = Math.cos(a2) / Math.cos(a);
+        if (scaleX <= 0.1) continue;
+        const dxc = cx + R * Math.sin(a2);
+        const dw = (cw + margin) * scaleX;
+        ctx.drawImage(buf, sx, sy, cw + margin, ch + margin, dxc - dw / 2, sy, dw, ch + margin);
+      }
+    }
+  }
+
   draw(now) {
     const { ctx, w, h } = this;
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
@@ -490,10 +593,14 @@ export class LayeredGirlRenderer {
     const breathX = 1 + 0.0025 * breath;
     const breathY = 1 + 0.004 * breath;
     // 摇头：先大后小地衰减，身体反向轻带一点，脖子才不会像被甩脱
-    const sadP = this.sadDur ? clamp((now - this.sadT0) / this.sadDur, 0, 1) : 1;
-    const sadWave = Math.sin(this.sadPhase) * this.sadEnv * this.sadShakeAmp * (1 - 0.5 * sadP);
+    // 摇头只占前 1.15s：正弦包络快速起、末尾归零，之后停在无奈表情上
+    const shakeP = this.sadT0 ? clamp((now - this.sadT0) / 1150, 0, 1) : 1;
+    const shakeGate = this.sadT0
+      ? Math.pow(Math.sin(Math.PI * shakeP), 0.65) * (1 - 0.45 * shakeP)
+      : 0;
+    const sadWave = Math.sin(this.sadPhase) * this.sadEnv * this.sadShakeAmp * shakeGate;
     const sway = Math.sin(this.t * 0.62) * 0.010 + Math.sin(this.t * 0.23 + 1.1) * 0.004
-      - sadWave * 0.004;
+      - sadWave * 0.003;
     // 起跳时轻微拉伸、落地回弹，让弹跳有重量感
     const hopE = this.bounceAmp ? clamp(bounce / this.bounceAmp, 0, 1) : 0;
     const hopStretch = 1 + 0.035 * hopE;
@@ -520,74 +627,30 @@ export class LayeredGirlRenderer {
       const fade = clamp((this.happyUntil - now) / 1200, 0, 1);
       tilt += Math.sin(hp * TAU * 1.7) * 0.018 * fade;
     }
-    const sadShake = Math.sin(this.sadPhase - 0.45) * 0.022 * this.sadEnv * this.sadShakeAmp * (1 - 0.5 * sadP);
-    if (this.sadEnv > 0.001) tilt += sadShake + 0.012 * this.sadEnv;
+    const sadShake = sadWave * 0.006;
+    if (this.sadEnv > 0.001) tilt += sadShake + 0.009 * this.sadEnv;
     if (this.bowHead > 0.001) tilt += this.bowHead * 0.052;
     // 头绕颈根旋转，限幅避免发梢/下巴把脖子或衣服撕开
     tilt = clamp(tilt, -0.095, 0.095);
     const headBob = Math.sin(this.t * 1.45 + 0.9) * 1.6 + this.idle.y
       + this.bowHead * 40 + this.sadEnv * 1.4;
-    const headPan = this.idle.x + sadWave * 3.0;
-    // 2D 没有转头帧：用绕颈根的横向剪切伪造“转头”，头顶摆幅大于下巴，脖子不会脱开
-    const headShear = sadWave * 0.095;
+    const headPan = this.idle.x * 0.25;
     // 难过时让原嘴淡出、只留画在干净皮肤上的小撇嘴，避免叠出“补丁嘴”
     const sadMouth = clamp((this.sadEnv - 0.3) / 0.4, 0, 1);
+    const mouthOpen = Math.max(this.mouth, this.idleMouth);
+    const headBuf = this._composeHead(now, sadMouth, mouthOpen);
+
+    // 转头不是整块斜切：绕脸部中线做圆柱投影，越靠边越前缩；颈部一段权重归零，
+    // 头转动时脖子仍钉在身体上。idle.x 是“想看哪边”，直接映射成偏航角。
+    const yaw = clamp(this.idle.x * 0.018 + sadWave * 0.078, -0.14, 0.14);
+    const nod = clamp(this.idle.y / 3, -1, 1);
 
     ctx.save();
     ctx.translate(px + headPan, py + headBob);
     ctx.rotate(tilt);
-    ctx.transform(1, 0, headShear, 1, 0, 0);
+    ctx.scale(1, 1 - 0.010 * nod);
     ctx.translate(-px, -py);
-    ctx.drawImage(this.headImg, 0, 0);
-
-    if (this.blink > 0.01) {
-      ctx.globalAlpha = this.blink;
-      for (const side of ['left', 'right']) {
-        const b = this.meta.eyes[side].box;
-        ctx.drawImage(this.eyeImgs[side], b[0], b[1], b[2] - b[0], b[3] - b[1]);
-      }
-      ctx.globalAlpha = 1;
-    }
-
-    const [mx0, my0, mx1, my1] = this.mouthBox;
-    const mw = mx1 - mx0 + this.mouthPad * 2;
-    const mh = my1 - my0 + this.mouthPad * 2;
-    const bx = mx0 - this.mouthPad;
-    const by = my0 - this.mouthPad;
-    ctx.globalAlpha = 1 - sadMouth;
-    ctx.drawImage(this.mouthClosedImg, bx, by, mw, mh);
-    ctx.globalAlpha = 1;
-    // 底图自带张嘴，闭嘴贴片是它的遮罩；难过时不淡出（会露出底图），而是把贴片上下翻转 → 同画风的撇嘴
-    if (sadMouth > 0.001) {
-      ctx.save();
-      ctx.translate(bx, by + mh);
-      ctx.scale(1, -1);
-      ctx.globalAlpha = sadMouth;
-      ctx.drawImage(this.mouthClosedImg, 0, 0, mw, mh);
-      ctx.restore();
-    }
-    const mouthOpen = Math.max(this.mouth, this.idleMouth);
-    if (mouthOpen > 0.03 && sadMouth < 0.5) {
-      const [ix0, iy0, ix1, iy1] = this.mouthInner;
-      const midX = (ix0 + ix1) / 2;
-      // drop the jaw from the upper lip; the extra skin below the lip is
-      // cropped off so a full stretch never reaches the collar bow
-      const srcH = Math.min(mh, iy1 + 2);
-      const scaleY = 0.82 + this.mouthStretch * mouthOpen;
-      const k = mouthOpen * mouthOpen * (3 - 2 * mouthOpen);
-      const dw = mw * (1 + 0.06 * mouthOpen);
-      const dx = bx - (dw - mw) / 2;
-      const dy = by + iy0 * (1 - scaleY);
-      // 裁剪到嘴部补丁内：张嘴再大也不会压到下巴/领结
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(bx, by, mw, mh);
-      ctx.clip();
-      ctx.globalAlpha = k;
-      ctx.drawImage(this.mouthOpenImg, 0, 0, mw, srcH, dx, dy, dw, srcH * scaleY);
-      ctx.restore();
-    }
-    if (this.sadEnv > 0.02) this._drawSadFace(ctx, this.sadEnv, now, mouthOpen > 0.05);
+    this._blitHead(ctx, headBuf, yaw);
     ctx.restore();
     ctx.restore();
 
