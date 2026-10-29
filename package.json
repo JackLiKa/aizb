@@ -53,7 +53,7 @@
         "portable"
       ],
       "icon": "build/icon.ico",
-      "artifactName": "dyzb-${version}-${arch}.${ext}"
+      "artifactName": "dyzb-${version}-${arch}-${target}.${ext}"
     },
     "nsis": {
       "oneClick": false,

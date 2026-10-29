@@ -55,6 +55,12 @@ export class LayeredGirlRenderer {
     this.blinkHold = null;
     this.blinkT = -1;
     this.nextBlink = 2.4;
+    this.doubleBlink = false;
+    this.idleAction = null;
+    this.idleNext = 1.6 + Math.random() * 1.8;
+    this.idle = { x: 0, y: 0, tilt: 0 };
+    this.idleTarget = { x: 0, y: 0, tilt: 0 };
+    this.idleMouth = 0;
     this.particles = [];
     this.notes = [];
     this.bubbles = [];
@@ -199,11 +205,18 @@ export class LayeredGirlRenderer {
       this.blink = p >= 1 ? 0 : Math.sin(Math.PI * clamp(p, 0, 1));
       if (p >= 1) {
         this.blinkT = -1;
-        this.nextBlink = this.t + 2.2 + Math.random() * 3.4;
+        if (this.doubleBlink) {
+          this.doubleBlink = false;
+          this.nextBlink = this.t + 0.26;
+        } else {
+          this.nextBlink = this.t + 2.2 + Math.random() * 3.4;
+        }
       }
     } else if (this.t > this.nextBlink) {
       this.blinkT = 0;
     }
+
+    this._updateIdle(dt, now);
 
     for (const b of this.bubbles) {
       b.y -= b.speed * dt;
@@ -243,6 +256,83 @@ export class LayeredGirlRenderer {
     }
   }
 
+  // 待机时每隔几秒挑一个随机小动作，让形象自己「活」起来：
+  // 张望、歪头、点头、哼歌动嘴、轻颤、连眨。说话/唱歌/思考时自动让位。
+  _startIdleAction(now) {
+    const pool = ['glance', 'glance', 'glance', 'tilt', 'nod', 'hum', 'shiver', 'blink2'];
+    const kind = pool[Math.floor(Math.random() * pool.length)];
+    const dur = { glance: 1.6, tilt: 2.0, nod: 1.1, hum: 1.2, shiver: 0.8, blink2: 0.45 }[kind];
+    this.idleAction = {
+      kind,
+      t0: this.t,
+      dur,
+      dir: Math.random() < 0.5 ? -1 : 1,
+      seed: Math.random() * TAU,
+    };
+    if (kind === 'blink2') {
+      this.blinkT = 0;
+      this.doubleBlink = true;
+    }
+    if (kind === 'shiver') this.bounceUntil = Math.max(this.bounceUntil, now + 620);
+  }
+
+  _updateIdle(dt, now) {
+    const target = this.idleTarget;
+    if (this.mode !== 'idle') {
+      this.idleAction = null;
+      this.doubleBlink = false;
+      target.x = 0;
+      target.y = 0;
+      target.tilt = 0;
+      this.idleNext = this.t + 1.4;
+    } else {
+      const a = this.idleAction;
+      if (!a) {
+        target.x = 0;
+        target.y = 0;
+        target.tilt = 0;
+        if (this.t >= this.idleNext) this._startIdleAction(now);
+      } else {
+        const p = clamp((this.t - a.t0) / a.dur, 0, 1);
+        const env = Math.sin(Math.PI * p);
+        if (a.kind === 'glance') {
+          target.x = a.dir * 2.4 * env;
+          target.y = -0.8 * env;
+          target.tilt = a.dir * 0.030 * env;
+        } else if (a.kind === 'tilt') {
+          target.x = a.dir * 1.0 * env;
+          target.y = 0.6 * env;
+          target.tilt = a.dir * 0.062 * env;
+        } else if (a.kind === 'nod') {
+          target.y = Math.sin(p * Math.PI * 4) * 3.2 * (1 - p);
+          target.x = 0;
+          target.tilt = Math.sin(p * Math.PI * 2) * 0.012 * (1 - p);
+        } else if (a.kind === 'shiver') {
+          target.x = Math.sin(this.t * 36) * 1.8 * (1 - p);
+          target.y = 0;
+          target.tilt = Math.sin(this.t * 29 + a.seed) * 0.014 * (1 - p);
+        } else {
+          target.x = 0;
+          target.y = 0;
+          target.tilt = 0;
+        }
+        this.idleMouth = a.kind === 'hum'
+          ? 0.10 + 0.11 * env * (0.5 + 0.5 * Math.sin(this.t * 15 + a.seed))
+          : 0;
+        if (p >= 1) {
+          this.idleAction = null;
+          this.idleMouth = 0;
+          this.idleNext = this.t + 2.2 + Math.random() * 3.8;
+        }
+      }
+    }
+    const k = 1 - Math.pow(0.0008, dt);
+    this.idle.x += (target.x - this.idle.x) * k;
+    this.idle.y += (target.y - this.idle.y) * k;
+    this.idle.tilt += (target.tilt - this.idle.tilt) * k;
+    if (this.mode !== 'idle') this.idleMouth *= Math.pow(0.002, dt);
+  }
+
   // 尾巴和裙摆烘焙在同一张身体图里，没法单独成层：尾根以下整段绕尾根
   // 做一次旋转，尾鳍横移量最大约 tailAmp 像素，接缝处位移为 0。
   _drawBody(ctx) {
@@ -254,7 +344,8 @@ export class LayeredGirlRenderer {
     ctx.drawImage(img, 0, 0);
     if (t0 >= H) return;
     const span = H - t0;
-    const ang = (this.tailAmp / span) * Math.sin(this.t * 1.15 + 0.9);
+    const liven = 1 + 0.55 * Math.min(1, Math.abs(this.idle.x) / 2.4 + Math.abs(this.idle.tilt) / 0.06);
+    const ang = (this.tailAmp / span) * Math.sin(this.t * 1.15 * liven + 0.9);
     ctx.save();
     // 整段旋转时尾巴左上角会翘到接缝之上，用水平裁剪把接缝焊死
     ctx.beginPath();
@@ -299,14 +390,15 @@ export class LayeredGirlRenderer {
     this._drawBody(ctx);
 
     const [px, py] = this.pivot;
-    let tilt = Math.sin(this.t * 0.82 + 0.6) * 0.020;
+    let tilt = Math.sin(this.t * 0.82 + 0.6) * 0.020 + this.idle.tilt;
     if (this.mode === 'thinking') tilt -= 0.052;
     if (this.mode === 'singing') tilt += Math.sin(this.t * 2.1) * 0.014;
     if (now < this.happyUntil) tilt += Math.sin((this.happyUntil - now) / 110) * 0.02;
-    const headBob = Math.sin(this.t * 1.45 + 0.9) * 1.6;
+    const headBob = Math.sin(this.t * 1.45 + 0.9) * 1.6 + this.idle.y;
+    const headPan = this.idle.x;
 
     ctx.save();
-    ctx.translate(px, py + headBob);
+    ctx.translate(px + headPan, py + headBob);
     ctx.rotate(tilt);
     ctx.translate(-px, -py);
     ctx.drawImage(this.headImg, 0, 0);
@@ -326,15 +418,16 @@ export class LayeredGirlRenderer {
     const bx = mx0 - this.mouthPad;
     const by = my0 - this.mouthPad;
     ctx.drawImage(this.mouthClosedImg, bx, by, mw, mh);
-    if (this.mouth > 0.03) {
+    const mouthOpen = Math.max(this.mouth, this.idleMouth);
+    if (mouthOpen > 0.03) {
       const [ix0, iy0, ix1, iy1] = this.mouthInner;
       const midX = (ix0 + ix1) / 2;
       // drop the jaw from the upper lip; the extra skin below the lip is
       // cropped off so a full stretch never reaches the collar bow
       const srcH = Math.min(mh, iy1 + 2);
-      const scaleY = 0.82 + this.mouthStretch * this.mouth;
-      const k = this.mouth * this.mouth * (3 - 2 * this.mouth);
-      const dw = mw * (1 + 0.10 * this.mouth);
+      const scaleY = 0.82 + this.mouthStretch * mouthOpen;
+      const k = mouthOpen * mouthOpen * (3 - 2 * mouthOpen);
+      const dw = mw * (1 + 0.10 * mouthOpen);
       const dx = bx + midX - (midX * dw) / mw;
       const dy = by + iy0 * (1 - scaleY);
       ctx.globalAlpha = k;

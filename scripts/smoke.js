@@ -24,6 +24,7 @@ async function main() {
     tts: { provider: 'none' },
     behavior: { replyProbability: 1, userCooldownSec: 0, dedupeWindowSec: 0, minIntervalSec: 0 },
     night: { enabled: false },
+    compliance: { humanInLoop: false },
     jukebox: { dir: 'music', perUserCooldownSec: 0 },
   });
 
