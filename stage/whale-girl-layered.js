@@ -6,6 +6,11 @@ const ASSET = './assets/avatar/';
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
+const smoothstep = (v) => {
+  const x = clamp(v, 0, 1);
+  return x * x * (3 - 2 * x);
+};
+
 function parseHex(hex) {
   const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || ''));
   if (!m) return null;
@@ -49,6 +54,8 @@ export class LayeredGirlRenderer {
     this.lastFrame = 0;
     this.t = 0;
     this.mode = 'idle';
+    this.thinkEnv = 0;
+    this.singEnv = 0;
     this.mouth = 0;
     this.mouthTarget = 0;
     this.blink = 0;
@@ -65,6 +72,7 @@ export class LayeredGirlRenderer {
     this.notes = [];
     this.bubbles = [];
     this.happyUntil = 0;
+    this.happyT0 = 0;
     this.bounceUntil = 0;
     this.bounceStart = 0;
     this.bounceDur = 1400;
@@ -72,9 +80,12 @@ export class LayeredGirlRenderer {
     this.bowT0 = 0;
     this.bowDur = 2400;
     this.bowEnv = 0;
+    this.bowHead = 0;
     this.sadT0 = 0;
     this.sadDur = 4200;
     this.sadEnv = 0;
+    this.sadPhase = 0;
+    this.sadShakeAmp = 0;
     this._lastNoteAt = 0;
     this.palette = { fin: palette.finColor || '#6f8fe0' };
     this.w = 1280;
@@ -166,7 +177,11 @@ export class LayeredGirlRenderer {
   celebrate() {
     const now = performance.now();
     this.bowT0 = 0;
+    this.bowHead = 0;
     this.sadT0 = 0;
+    this.sadPhase = 0;
+    this.sadShakeAmp = 0;
+    this.happyT0 = now;
     this.happyUntil = now + 2600;
     this.bounceStart = now;
     this.bounceDur = 1400;
@@ -175,12 +190,15 @@ export class LayeredGirlRenderer {
     this._spawnBurst(36);
   }
 
-  // 礼物：低头鞠躬，持续约 2.4s（下压 → 停顿 → 起身）
+  // 礼物：低头鞠躬，持续约 2.4s（预备 → 下压 → 停顿 → 回弹起身）
   bow() {
     const now = performance.now();
     this.bowT0 = now;
     this.bowDur = 2400;
     this.sadT0 = 0;
+    this.sadPhase = 0;
+    this.sadShakeAmp = 0;
+    this.happyT0 = now;
     this.happyUntil = Math.max(this.happyUntil, now + 1400);
     this.bounceStart = 0;
     this.bounceUntil = 0;
@@ -192,20 +210,43 @@ export class LayeredGirlRenderer {
     const now = performance.now();
     this.sadT0 = now;
     this.sadDur = 4200;
+    this.sadPhase = 0;
+    this.sadShakeAmp = 0;
     this.bowT0 = 0;
+    this.bowHead = 0;
     this.happyUntil = 0;
     this.bounceStart = 0;
     this.bounceUntil = 0;
   }
 
-  // 0→1→0 的动作包络：p 比例内快速进入，末尾平滑退出
+  // 0→1→0 的动作包络：进出一律 smoothstep，避免线性折角造成的顿挫
   _actionEnv(now, t0, dur, inFrac = 0.22, holdFrac = 0.58) {
     if (!t0) return 0;
     const p = (now - t0) / dur;
     if (p <= 0 || p >= 1) return 0;
-    if (p < inFrac) return p / inFrac;
+    if (p < inFrac) return smoothstep(p / inFrac);
     if (p < holdFrac) return 1;
-    return 1 - (p - holdFrac) / (1 - holdFrac);
+    return smoothstep((1 - p) / (1 - holdFrac));
+  }
+
+  // 鞠躬曲线：先轻微起身作预备，再下沉、停顿微松，起身带一点回弹
+  _bowCurve(now) {
+    if (!this.bowT0) return 0;
+    const p = (now - this.bowT0) / this.bowDur;
+    if (p <= 0 || p >= 1) return 0;
+    const inEnd = 0.24;
+    const holdEnd = 0.56;
+    if (p < inEnd) {
+      const x = p / inEnd;
+      if (x < 0.28) return -0.06 * smoothstep(x / 0.28);
+      return -0.06 + 1.06 * smoothstep((x - 0.28) / 0.72);
+    }
+    if (p < holdEnd) {
+      const x = (p - inEnd) / (holdEnd - inEnd);
+      return 1 + 0.012 * Math.sin(x * Math.PI * 3) * (1 - x);
+    }
+    const x = (p - holdEnd) / (1 - holdEnd);
+    return 1 - smoothstep(x) + 0.045 * Math.sin(Math.PI * x) * (1 - x);
   }
 
   _hop(now) {
@@ -247,8 +288,19 @@ export class LayeredGirlRenderer {
   }
 
   update(dt, now) {
-    this.bowEnv = this._actionEnv(now, this.bowT0, this.bowDur, 0.26, 0.4);
-    this.sadEnv = this._actionEnv(now, this.sadT0, this.sadDur, 0.14, 0.64);
+    this.bowEnv = this._bowCurve(now);
+    this.sadEnv = this._actionEnv(now, this.sadT0, this.sadDur, 0.12, 0.66);
+
+    // 头部比身体晚一点跟上、晚一点收回，形成跟随感而不是整体硬切
+    const bowTarget = Math.max(0, this.bowEnv);
+    this.bowHead += (bowTarget - this.bowHead) * Math.min(1, dt * 9);
+    if (this.sadEnv > 0.001) {
+      this.sadPhase += dt * TAU * 2.1;
+      this.sadShakeAmp += (1 - this.sadShakeAmp) * Math.min(1, dt * 3.2);
+    } else {
+      this.sadPhase = 0;
+      this.sadShakeAmp += (0 - this.sadShakeAmp) * Math.min(1, dt * 4.5);
+    }
 
     this.mouth += (this.mouthTarget - this.mouth) * Math.min(1, dt * 16);
     if (this.mode !== 'speaking') this.mouthTarget *= Math.pow(0.002, dt);
@@ -274,6 +326,8 @@ export class LayeredGirlRenderer {
     }
 
     this._updateIdle(dt, now);
+    this.thinkEnv += (((this.mode === 'thinking') ? 1 : 0) - this.thinkEnv) * Math.min(1, dt * 4);
+    this.singEnv += (((this.mode === 'singing') ? 1 : 0) - this.singEnv) * Math.min(1, dt * 3);
 
     for (const b of this.bubbles) {
       b.y -= b.speed * dt;
@@ -318,7 +372,7 @@ export class LayeredGirlRenderer {
   _startIdleAction(now) {
     const pool = ['glance', 'glance', 'glance', 'tilt', 'nod', 'hum', 'shiver', 'blink2'];
     const kind = pool[Math.floor(Math.random() * pool.length)];
-    const dur = { glance: 1.6, tilt: 2.0, nod: 1.1, hum: 1.2, shiver: 0.8, blink2: 0.45 }[kind];
+    const dur = { glance: 1.8, tilt: 2.2, nod: 1.4, hum: 1.3, shiver: 1.0, blink2: 0.45 }[kind];
     this.idleAction = {
       kind,
       t0: this.t,
@@ -359,21 +413,21 @@ export class LayeredGirlRenderer {
         const p = clamp((this.t - a.t0) / a.dur, 0, 1);
         const env = Math.sin(Math.PI * p);
         if (a.kind === 'glance') {
-          target.x = a.dir * 2.4 * env;
-          target.y = -0.8 * env;
-          target.tilt = a.dir * 0.030 * env;
+          target.x = a.dir * 3.8 * env;
+          target.y = -1.1 * env;
+          target.tilt = a.dir * 0.038 * env;
         } else if (a.kind === 'tilt') {
-          target.x = a.dir * 1.0 * env;
-          target.y = 0.6 * env;
-          target.tilt = a.dir * 0.062 * env;
+          target.x = a.dir * 1.5 * env;
+          target.y = 0.8 * env;
+          target.tilt = a.dir * 0.055 * env;
         } else if (a.kind === 'nod') {
-          target.y = Math.sin(p * Math.PI * 4) * 3.2 * (1 - p);
+          target.y = Math.sin(p * Math.PI * 4) * 3.0 * (1 - p);
           target.x = 0;
-          target.tilt = Math.sin(p * Math.PI * 2) * 0.012 * (1 - p);
+          target.tilt = Math.sin(p * Math.PI * 2) * 0.010 * (1 - p);
         } else if (a.kind === 'shiver') {
-          target.x = Math.sin(this.t * 36) * 1.8 * (1 - p);
+          target.x = Math.sin(this.t * 24) * 1.2 * (1 - p);
           target.y = 0;
-          target.tilt = Math.sin(this.t * 29 + a.seed) * 0.014 * (1 - p);
+          target.tilt = Math.sin(this.t * 19 + a.seed) * 0.010 * (1 - p);
         } else {
           target.x = 0;
           target.y = 0;
@@ -442,14 +496,17 @@ export class LayeredGirlRenderer {
     const breathX = 1 + 0.0025 * breath;
     const breathY = 1 + 0.004 * breath;
     const sway = Math.sin(this.t * 0.62) * 0.010 + Math.sin(this.t * 0.23 + 1.1) * 0.004;
+    // 起跳时轻微拉伸、落地回弹，让弹跳有重量感
+    const hopE = this.bounceAmp ? clamp(bounce / this.bounceAmp, 0, 1) : 0;
+    const hopStretch = 1 + 0.035 * hopE;
 
     ctx.save();
     ctx.translate(cx, baseY);
     ctx.rotate(sway);
-    ctx.scale(breathX, breathY);
-    if (this.bowEnv > 0.001) {
-      ctx.translate(0, this.bowEnv * 8);
-      ctx.scale(1, 1 - this.bowEnv * 0.055);
+    ctx.scale(breathX * (1 - 0.025 * hopE), breathY * hopStretch);
+    if (this.bowEnv > 0.001 || this.bowEnv < -0.001) {
+      ctx.translate(0, this.bowEnv * 10);
+      ctx.scale(1 + this.bowEnv * 0.010, 1 - this.bowEnv * 0.035);
     }
     ctx.translate(-cw / 2, -ch);
     ctx.scale(s, s);
@@ -457,22 +514,23 @@ export class LayeredGirlRenderer {
     this._drawBody(ctx);
 
     const [px, py] = this.pivot;
-    let tilt = Math.sin(this.t * 0.82 + 0.6) * 0.020 + this.idle.tilt;
-    if (this.mode === 'thinking') tilt -= 0.052;
-    if (this.mode === 'singing') tilt += Math.sin(this.t * 2.1) * 0.014;
-    if (now < this.happyUntil) tilt += Math.sin((this.happyUntil - now) / 110) * 0.02;
-    const sadShake = this.sadEnv > 0.001
-      ? Math.sin(((now - this.sadT0) / 1000) * Math.PI * 2 * 2.1) * 0.055 * this.sadEnv
-      : 0;
-    if (this.sadEnv > 0.001) tilt += sadShake + 0.02 * this.sadEnv;
-    if (this.bowEnv > 0.001) tilt += this.bowEnv * 0.085;
+    let tilt = (Math.sin(this.t * 0.82 + 0.6) * 0.020 + this.idle.tilt) * (1 - 0.85 * this.sadEnv);
+    if (this.thinkEnv > 0.001) tilt -= 0.052 * this.thinkEnv;
+    if (this.singEnv > 0.001) tilt += Math.sin(this.t * 2.1) * 0.014 * this.singEnv;
+    if (now < this.happyUntil && this.happyT0) {
+      const hp = (now - this.happyT0) / 1000;
+      const fade = clamp((this.happyUntil - now) / 1200, 0, 1);
+      tilt += Math.sin(hp * TAU * 1.7) * 0.018 * fade;
+    }
+    const sadShake = Math.sin(this.sadPhase) * 0.075 * this.sadEnv * this.sadShakeAmp;
+    if (this.sadEnv > 0.001) tilt += sadShake + 0.015 * this.sadEnv;
+    if (this.bowHead > 0.001) tilt += this.bowHead * 0.052;
     // 头绕颈根旋转，限幅避免发梢/下巴把脖子或衣服撕开
-    tilt = clamp(tilt, -0.09, 0.09);
+    tilt = clamp(tilt, -0.095, 0.095);
     const headBob = Math.sin(this.t * 1.45 + 0.9) * 1.6 + this.idle.y
-      + this.bowEnv * 34 + this.sadEnv * 2.5;
-    const headPan = this.idle.x + (this.sadEnv > 0.001
-      ? Math.sin(((now - this.sadT0) / 1000) * Math.PI * 2 * 2.1) * 2.4 * this.sadEnv
-      : 0);
+      + this.bowHead * 40 + this.sadEnv * 2.5
+      + Math.sin(this.sadPhase * 2) * 1.1 * this.sadEnv * this.sadShakeAmp;
+    const headPan = this.idle.x + Math.sin(this.sadPhase) * 4.5 * this.sadEnv * this.sadShakeAmp;
 
     ctx.save();
     ctx.translate(px + headPan, py + headBob);

@@ -2,6 +2,11 @@ const TAU = Math.PI * 2;
 
 function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
 
+function smoothstep(v) {
+  const x = clamp(v, 0, 1);
+  return x * x * (3 - 2 * x);
+}
+
 function parseHex(hex) {
   const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || ''));
   if (!m) return null;
@@ -48,6 +53,7 @@ export class WhaleGirlRenderer {
     this.mouth = 0;
     this.mouthTarget = 0;
     this.happyUntil = 0;
+    this.happyT0 = 0;
     this.bounceUntil = 0;
     this.bounceStart = 0;
     this.bounceDur = 1400;
@@ -58,6 +64,8 @@ export class WhaleGirlRenderer {
     this.sadT0 = 0;
     this.sadDur = 4200;
     this.sadEnv = 0;
+    this.sadPhase = 0;
+    this.sadShakeAmp = 0;
     this.nextBlink = 2 + Math.random() * 3;
     this.blinkStart = -1;
     this.particles = [];
@@ -134,6 +142,9 @@ export class WhaleGirlRenderer {
     const now = performance.now();
     this.bowT0 = 0;
     this.sadT0 = 0;
+    this.sadPhase = 0;
+    this.sadShakeAmp = 0;
+    this.happyT0 = now;
     this.happyUntil = now + 2600;
     this.bounceStart = now;
     this.bounceDur = 1400;
@@ -147,6 +158,9 @@ export class WhaleGirlRenderer {
     this.bowT0 = now;
     this.bowDur = 2400;
     this.sadT0 = 0;
+    this.sadPhase = 0;
+    this.sadShakeAmp = 0;
+    this.happyT0 = now;
     this.happyUntil = Math.max(this.happyUntil, now + 1400);
     this.bounceStart = 0;
     this.bounceUntil = 0;
@@ -157,19 +171,42 @@ export class WhaleGirlRenderer {
     const now = performance.now();
     this.sadT0 = now;
     this.sadDur = 4200;
+    this.sadPhase = 0;
+    this.sadShakeAmp = 0;
     this.bowT0 = 0;
     this.happyUntil = 0;
     this.bounceStart = 0;
     this.bounceUntil = 0;
   }
 
+  // 0→1→0 包络进出都用 smoothstep，避免线性折角
   _actionEnv(now, t0, dur, inFrac = 0.22, holdFrac = 0.58) {
     if (!t0) return 0;
     const p = (now - t0) / dur;
     if (p <= 0 || p >= 1) return 0;
-    if (p < inFrac) return p / inFrac;
+    if (p < inFrac) return smoothstep(p / inFrac);
     if (p < holdFrac) return 1;
-    return 1 - (p - holdFrac) / (1 - holdFrac);
+    return smoothstep((1 - p) / (1 - holdFrac));
+  }
+
+  // 鞠躬：预备 → 下压 → 停顿 → 回弹起身
+  _bowCurve(now) {
+    if (!this.bowT0) return 0;
+    const p = (now - this.bowT0) / this.bowDur;
+    if (p <= 0 || p >= 1) return 0;
+    const inEnd = 0.24;
+    const holdEnd = 0.56;
+    if (p < inEnd) {
+      const x = p / inEnd;
+      if (x < 0.28) return -0.06 * smoothstep(x / 0.28);
+      return -0.06 + 1.06 * smoothstep((x - 0.28) / 0.72);
+    }
+    if (p < holdEnd) {
+      const x = (p - inEnd) / (holdEnd - inEnd);
+      return 1 + 0.012 * Math.sin(x * Math.PI * 3) * (1 - x);
+    }
+    const x = (p - holdEnd) / (1 - holdEnd);
+    return 1 - smoothstep(x) + 0.045 * Math.sin(Math.PI * x) * (1 - x);
   }
 
   _hop(now) {
@@ -211,8 +248,15 @@ export class WhaleGirlRenderer {
   }
 
   update(dt, now) {
-    this.bowEnv = this._actionEnv(now, this.bowT0, this.bowDur, 0.26, 0.4);
-    this.sadEnv = this._actionEnv(now, this.sadT0, this.sadDur, 0.14, 0.64);
+    this.bowEnv = this._bowCurve(now);
+    this.sadEnv = this._actionEnv(now, this.sadT0, this.sadDur, 0.12, 0.66);
+    if (this.sadEnv > 0.001) {
+      this.sadPhase += dt * TAU * 2.1;
+      this.sadShakeAmp += (1 - this.sadShakeAmp) * Math.min(1, dt * 3.2);
+    } else {
+      this.sadPhase = 0;
+      this.sadShakeAmp += (0 - this.sadShakeAmp) * Math.min(1, dt * 4.5);
+    }
 
     this.mouth += (this.mouthTarget - this.mouth) * Math.min(1, dt * 18);
     if (this.mode !== 'speaking') this.mouthTarget *= Math.pow(0.001, dt);
@@ -277,13 +321,12 @@ export class WhaleGirlRenderer {
     ctx.translate(cx, cy);
     ctx.scale(scale, scale);
     const tilt = Math.sin(this.t * 0.8) * 0.014;
-    const sadShake = this.sadEnv > 0.001
-      ? Math.sin(((now - this.sadT0) / 1000) * Math.PI * 2 * 2.1) * 0.06 * this.sadEnv
-      : 0;
+    const sadShake = Math.sin(this.sadPhase) * 0.07 * this.sadEnv * this.sadShakeAmp;
     const bob = Math.sin(this.t * 1.15) * 5 - bounce * 0.15 + this.bowEnv * 10 + this.sadEnv * 2;
+    const hopE = this.bounceAmp ? clamp(bounce / this.bounceAmp, 0, 1) : 0;
     ctx.translate(0, bob);
     ctx.rotate(tilt + sadShake + this.bowEnv * 0.05);
-    if (this.bowEnv > 0.001) ctx.scale(1, 1 - this.bowEnv * 0.055);
+    ctx.scale(1 - 0.02 * hopE + this.bowEnv * 0.012, (1 + 0.03 * hopE) * (1 - this.bowEnv * 0.055));
     this._drawTail(ctx);
     this._drawBackHair(ctx);
     this._drawBody(ctx);
