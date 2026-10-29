@@ -1,0 +1,59 @@
+{
+  "geom": {
+    "w": 1280,
+    "h": 720,
+    "sw": 379,
+    "sh": 1034,
+    "tailY": 760,
+    "tailAmp": 13,
+    "pivot": [
+      204,
+      238
+    ]
+  },
+  "fps": 30,
+  "clips": [
+    {
+      "name": "01-tail",
+      "act": "tail",
+      "frames": 164,
+      "ms": 34397
+    },
+    {
+      "name": "02-glance",
+      "act": "glance",
+      "frames": 66,
+      "ms": 13546
+    },
+    {
+      "name": "03-blink",
+      "act": "blink",
+      "frames": 36,
+      "ms": 7412
+    },
+    {
+      "name": "04-talk",
+      "act": "talk",
+      "frames": 60,
+      "ms": 12160
+    },
+    {
+      "name": "05-hop",
+      "act": "hop",
+      "frames": 48,
+      "ms": 9593
+    },
+    {
+      "name": "06-bow",
+      "act": "bow",
+      "frames": 78,
+      "ms": 15623
+    },
+    {
+      "name": "07-sad",
+      "act": "sad",
+      "frames": 132,
+      "ms": 27094
+    }
+  ]
+}
