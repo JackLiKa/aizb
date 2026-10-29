@@ -1,14 +1,23 @@
 import * as THREE from 'three';
 import { buildPalette, buildWhaleGirl, heartShape, refreshEyeTextures } from './whale-model.js';
-
-const TAU = Math.PI * 2;
-
-function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
-
-function smoothstep(v) {
-  const x = clamp(v, 0, 1);
-  return x * x * (3 - 2 * x);
-}
+import {
+  TAU,
+  MOTION,
+  clamp,
+  clampTilt,
+  damp,
+  springStep,
+  breathAt,
+  weightAt,
+  BlinkScheduler,
+  idleGap,
+  idlePose,
+  pickIdleAction,
+  bowPose,
+  shakeGate,
+  shakeEnvelope,
+  hopPose,
+} from './motion-profiles.js';
 
 function radialTexture(inner, outer) {
   const size = 256;
@@ -60,16 +69,36 @@ export class WhaleGirlRenderer3D {
     this.happyEnv = 0;
     this.bounceUntil = 0;
     this.bounceStart = 0;
-    this.bounceDur = 1400;
+    this.bounceDur = MOTION.hop.dur;
     this.bowT0 = 0;
-    this.bowDur = 2400;
+    this.bowDur = MOTION.bow.dur;
     this.bowEnv = 0;
     this.bowHead = 0;
+    this.bowHeadState = { x: 0, v: 0 };
     this.sadT0 = 0;
-    this.sadDur = 4200;
+    this.sadDur = MOTION.shake.dur;
     this.sadEnv = 0;
     this.sadPhase = 0;
     this.sadShakeAmp = 0;
+    this.blinkScheduler = new BlinkScheduler();
+    this.idleAction = null;
+    this.idleNext = 1.6 + Math.random() * 1.8;
+    this.idle = { x: 0, y: 0, tilt: 0 };
+    this.idleTarget = { x: 0, y: 0, tilt: 0 };
+    this.idleMouth = 0;
+    this.breath = {};
+    this.weight = {};
+    this.idlePoseOut = {};
+    this.bowPoseOut = {};
+    this.hopOut = {};
+    breathAt(0, this.breath);
+    weightAt(0, this.weight);
+    bowPose(0, this.bowPoseOut);
+    hopPose(0, this.hopOut);
+    this.debug = {
+      tilt: 0, headPan: 0, bowBend: 0, bowHead: 0, sadWave: 0,
+      blink: 0, breath: 0, pelvis: 0, chest: 0,
+    };
     this.nextBlink = 2 + Math.random() * 3;
     this.blinkStart = -1;
     this.viewYaw = 0;
@@ -306,22 +335,26 @@ export class WhaleGirlRenderer3D {
     const now = performance.now();
     this.bowT0 = 0;
     this.bowHead = 0;
+    this.bowHeadState.x = 0;
+    this.bowHeadState.v = 0;
     this.sadT0 = 0;
     this.sadPhase = 0;
     this.sadShakeAmp = 0;
     this.happyT0 = now;
     this.happyUntil = now + 2600;
     this.bounceStart = now;
-    this.bounceDur = 1400;
+    this.bounceDur = MOTION.hop.dur;
     this.bounceUntil = now + this.bounceDur;
     this._spawnHearts(14);
   }
 
-  // 礼物：鞠躬（预备 → 低头 + 上身前倾 → 回弹，约 2.4s）
+  // 礼物：鞠躬（预备 → 低头 + 上身前倾 → 回收，约 2.4s）
   bow() {
     const now = performance.now();
     this.bowT0 = now;
-    this.bowDur = 2400;
+    this.bowDur = MOTION.bow.dur;
+    this.bowHeadState.x = 0;
+    this.bowHeadState.v = 0;
     this.sadT0 = 0;
     this.sadPhase = 0;
     this.sadShakeAmp = 0;
@@ -336,42 +369,72 @@ export class WhaleGirlRenderer3D {
   shakeHead() {
     const now = performance.now();
     this.sadT0 = now;
-    this.sadDur = 4200;
+    this.sadDur = MOTION.shake.dur;
     this.sadPhase = 0;
     this.sadShakeAmp = 0;
     this.bowT0 = 0;
     this.bowHead = 0;
+    this.bowHeadState.x = 0;
+    this.bowHeadState.v = 0;
     this.happyUntil = 0;
     this.bounceStart = 0;
     this.bounceUntil = 0;
   }
 
-  _actionEnv(now, t0, dur, inFrac = 0.22, holdFrac = 0.58) {
-    if (!t0) return 0;
-    const p = (now - t0) / dur;
-    if (p <= 0 || p >= 1) return 0;
-    if (p < inFrac) return smoothstep(p / inFrac);
-    if (p < holdFrac) return 1;
-    return smoothstep((1 - p) / (1 - holdFrac));
+  // 待机小动作：与分层 2D 使用同一份动作池与时长
+  _startIdleAction() {
+    const kind = pickIdleAction();
+    const A = MOTION.idle.actions[kind];
+    this.idleAction = {
+      kind,
+      t0: this.t,
+      dur: kind === 'glance' ? A.dur + Math.random() * 0.45 : A.dur,
+      dir: Math.random() < 0.5 ? -1 : 1,
+      seed: Math.random() * TAU,
+      fired: false,
+    };
+    this.idleNext = this.t + 1e9;
   }
 
-  _bowCurve(now) {
-    if (!this.bowT0) return 0;
-    const p = (now - this.bowT0) / this.bowDur;
-    if (p <= 0 || p >= 1) return 0;
-    const inEnd = 0.24;
-    const holdEnd = 0.56;
-    if (p < inEnd) {
-      const x = p / inEnd;
-      if (x < 0.28) return -0.06 * smoothstep(x / 0.28);
-      return -0.06 + 1.06 * smoothstep((x - 0.28) / 0.72);
+  _updateIdle(dt) {
+    const target = this.idleTarget;
+    const acting = this.bowEnv > 0.01 || this.sadEnv > 0.01;
+    if (this.mode !== 'idle' || acting) {
+      this.idleAction = null;
+      target.x = 0;
+      target.y = 0;
+      target.tilt = 0;
+      this.idleNext = this.t + 1.4;
+    } else {
+      const a = this.idleAction;
+      if (!a) {
+        target.x = 0;
+        target.y = 0;
+        target.tilt = 0;
+        if (this.t >= this.idleNext) this._startIdleAction();
+      } else {
+        const p = clamp((this.t - a.t0) / a.dur, 0, 1);
+        idlePose(a.kind, p, a.dir, this.t, a.seed, this.idlePoseOut);
+        target.x = this.idlePoseOut.x;
+        target.y = this.idlePoseOut.y;
+        target.tilt = this.idlePoseOut.tilt;
+        this.idleMouth = this.idlePoseOut.mouth;
+        if (this.idlePoseOut.doubleBlink && !a.fired) {
+          a.fired = true;
+          this.blinkScheduler.triggerDouble();
+        }
+        if (p >= 1) {
+          this.idleAction = null;
+          this.idleMouth = 0;
+          this.idleNext = this.t + idleGap();
+        }
+      }
     }
-    if (p < holdEnd) {
-      const x = (p - inEnd) / (holdEnd - inEnd);
-      return 1 + 0.012 * Math.sin(x * Math.PI * 3) * (1 - x);
-    }
-    const x = (p - holdEnd) / (1 - holdEnd);
-    return 1 - smoothstep(x) + 0.045 * Math.sin(Math.PI * x) * (1 - x);
+    const k = 1 - Math.exp(-dt * 9);
+    this.idle.x += (target.x - this.idle.x) * k;
+    this.idle.y += (target.y - this.idle.y) * k;
+    this.idle.tilt += (target.tilt - this.idle.tilt) * (1 - Math.exp(-dt * 8));
+    if (this.mode !== 'idle') this.idleMouth *= Math.pow(0.002, dt);
   }
 
   _spawnHearts(count) {
@@ -427,76 +490,112 @@ export class WhaleGirlRenderer3D {
   update(dt, now) {
     const t = this.t;
     const { nodes } = this;
+    const G = MOTION.gains3d;
     const happy = now < this.happyUntil;
     const singing = this.mode === 'singing';
     const thinking = this.mode === 'thinking';
     const speaking = this.mode === 'speaking';
 
-    this.bowEnv = this._bowCurve(now);
-    this.sadEnv = this._actionEnv(now, this.sadT0, this.sadDur, 0.12, 0.66);
+    // 姿态层：呼吸 + 重心转移（骨盆→胸腔→头部延迟）
+    breathAt(t, this.breath);
+    weightAt(t, this.weight);
+    const br = this.breath;
+
+    // 动作层：鞠躬曲线 + 头部弹簧跟随
+    const bowP = this.bowT0 ? clamp((now - this.bowT0) / this.bowDur, 0, 1) : 0;
+    bowPose(this.bowT0 ? bowP : 0, this.bowPoseOut);
+    this.bowEnv = this.bowT0 && bowP < 1 ? this.bowPoseOut.bend : 0;
+    springStep(
+      this.bowHeadState,
+      Math.max(0, this.bowEnv),
+      MOTION.bow.headOmega,
+      MOTION.bow.headZeta,
+      dt,
+    );
+    this.bowHead = this.bowHeadState.x;
+
+    // 摇头：缓入包络，只在前 1.15s 摆两下
+    const sadP = this.sadT0 ? clamp((now - this.sadT0) / this.sadDur, 0, 1) : 1;
+    this.sadEnv = this.sadT0 ? shakeEnvelope(sadP) : 0;
+    const shakeP = this.sadT0 ? clamp((now - this.sadT0) / MOTION.shake.waveDur, 0, 1) : 1;
+    const gate = this.sadT0 ? shakeGate(shakeP) : 0;
+    if (this.sadEnv > 0.001) {
+      this.sadPhase += dt * TAU * MOTION.shake.freq;
+      this.sadShakeAmp = damp(this.sadShakeAmp, 1, 6, dt);
+    } else {
+      this.sadPhase = 0;
+      this.sadShakeAmp = damp(this.sadShakeAmp, 0, 4.5, dt);
+    }
+    const sadWave = Math.sin(this.sadPhase) * this.sadEnv * this.sadShakeAmp * (1 - 0.35 * sadP) * gate;
 
     // 头部比身体晚半步跟上/收回；待机和笑眼同样做阻尼，避免整块硬切
-    const bowTarget = Math.max(0, this.bowEnv);
-    this.bowHead += (bowTarget - this.bowHead) * Math.min(1, dt * 9);
     this.happyEnv += ((happy ? 1 : 0) - this.happyEnv) * Math.min(1, dt * 5);
     this.thinkEnv += ((thinking ? 1 : 0) - this.thinkEnv) * Math.min(1, dt * 4);
     this.singEnv += ((singing ? 1 : 0) - this.singEnv) * Math.min(1, dt * 3);
     this.speakEnv += ((speaking ? 1 : 0) - this.speakEnv) * Math.min(1, dt * 6);
-    if (this.sadEnv > 0.001) {
-      this.sadPhase += dt * TAU * 1.15;
-      this.sadShakeAmp += (1 - this.sadShakeAmp) * Math.min(1, dt * 3.2);
-    } else {
-      this.sadPhase = 0;
-      this.sadShakeAmp += (0 - this.sadShakeAmp) * Math.min(1, dt * 4.5);
-    }
 
-    const k = 1 - Math.exp(-dt * 18);
+    this._updateIdle(dt);
+
+    const mouth = Math.max(this.mouth, this.idleMouth);
+    const k = 1 - Math.exp(-dt * MOTION.mouth.omega);
     this.mouth += (this.mouthTarget - this.mouth) * k;
-    nodes.mouthOpen.scale.y = clamp(0.38 + this.mouth * 0.62, 0.38, 1.02) * (1 - this.sadEnv * 0.3);
-    nodes.mouthOpen.scale.x = 1 + this.mouth * 0.06 + this.sadEnv * 0.08;
+    nodes.mouthOpen.scale.y = clamp(0.38 + mouth * 0.62, 0.38, 1.02) * (1 - this.sadEnv * 0.3);
+    nodes.mouthOpen.scale.x = 1 + mouth * 0.06 + this.sadEnv * 0.08;
 
-    if (this.blinkStart < 0 && t > this.nextBlink) {
-      this.blinkStart = t;
-    }
-    let blink = 1;
-    if (this.blinkStart >= 0) {
-      const p = (t - this.blinkStart) / 0.13;
-      if (p >= 1) {
-        this.blinkStart = -1;
-        this.nextBlink = t + 2.4 + Math.random() * 4;
-      } else {
-        blink = Math.max(0.06, Math.abs(Math.cos(p * Math.PI)));
-      }
-    }
+    // 眨眼：不规律节律（与 2D 同源）
+    this.blinkScheduler.update(dt);
+    let blink = 1 - this.blinkScheduler.closure * 0.94;
     if (happy) blink = Math.min(blink, 1 - this.happyEnv * 0.88);
     if (this.sadEnv > 0.05) blink = Math.min(blink, 0.2);
     nodes.eyeL.scale.y = blink;
     nodes.eyeR.scale.y = blink;
 
+    // 呼吸：胸腔扩张
     nodes.body.scale.set(
-      1 + Math.sin(t * 1.35) * 0.005,
-      1 + Math.sin(t * 1.35) * 0.012,
-      1 + Math.sin(t * 1.35) * 0.005,
+      1 + br.signed * G.breathXZ,
+      1 + br.signed * G.breathY,
+      1 + br.signed * G.breathXZ,
     );
 
+    // 庆祝弹跳：下蹲 → 抛物线腾空 → 落地压缩
     let jump = 0;
+    let hopScaleY = 1;
+    let hopScaleX = 1;
     if (this.bounceStart && now < this.bounceUntil) {
       const p = clamp((now - this.bounceStart) / this.bounceDur, 0, 1);
-      jump = Math.sin(p * Math.PI) * 0.14;
+      hopPose(p, this.hopOut);
+      jump = this.hopOut.y * MOTION.hop.amp3d;
+      hopScaleY = this.hopOut.scaleY;
+      hopScaleX = this.hopOut.scaleX;
     }
-    this.root.position.y = Math.sin(t * 1.2) * 0.014 + jump - this.bowEnv * 0.035;
+    const bowDown = Math.max(0, this.bowEnv);
+    this.root.position.y = br.signed * G.baseBob + jump - bowDown * MOTION.bow.rootSink3d;
+    // 骨盆重心左右转移（头部/躯干另有延迟跟随）
+    this.root.position.x = this.weight.pelvis * G.weightX;
+    this.root.scale.set(hopScaleX, hopScaleY, hopScaleX);
     this.root.rotation.y = this.viewYaw + Math.sin(t * 0.4) * 0.03;
-    if (nodes.body) nodes.body.rotation.x = this.bowEnv * 0.12 - this.sadEnv * 0.03;
+    if (nodes.body) {
+      nodes.body.rotation.x = bowDown * MOTION.bow.body3d - this.sadEnv * MOTION.shake.body3d;
+      // 胸腔延迟反向代偿
+      nodes.body.rotation.z = this.weight.chest * G.weightRoll;
+    }
 
-    const sadP = this.sadDur ? clamp((now - this.sadT0) / this.sadDur, 0, 1) : 1;
-    const sadDecay = 1 - 0.35 * sadP;
-    const sadShakeY = Math.sin(this.sadPhase) * 0.24 * this.sadEnv * this.sadShakeAmp * sadDecay;
-    nodes.head.rotation.x = Math.sin(t * 0.9) * 0.02 - 0.07 * this.thinkEnv + Math.sin(t * 3) * 0.008 * this.mouth
-      + this.bowHead * 0.34 + (Math.sin(this.sadPhase - 0.5) * 0.022 + 0.02) * this.sadEnv * this.sadShakeAmp * sadDecay;
-    nodes.head.rotation.y = Math.sin(t * 0.55) * 0.04 + 0.09 * this.thinkEnv + sadShakeY;
-    nodes.head.rotation.z = Math.sin(t * 0.7) * 0.015 + 0.1 * this.thinkEnv
-      - this.sadEnv * 0.03 + Math.sin(this.sadPhase - 0.3) * 0.012 * this.sadEnv * this.sadShakeAmp * sadDecay;
-    nodes.head.position.y = this.headY0 - this.bowHead * 0.02;
+    const idleYaw = this.idle.x * G.idleYaw;
+    nodes.head.rotation.x = Math.sin(t * 0.9) * 0.02 - 0.07 * this.thinkEnv
+      + Math.sin(t * 3) * 0.008 * mouth
+      + this.bowHead * 0.34
+      + this.idle.tilt * 0.25
+      + (Math.sin(this.sadPhase - 0.5) * 0.022 + 0.02) * this.sadEnv * this.sadShakeAmp * (1 - 0.35 * sadP) * gate;
+    nodes.head.rotation.y = Math.sin(t * 0.55) * 0.04 + 0.09 * this.thinkEnv
+      + sadWave * MOTION.shake.headYaw3d + idleYaw;
+    // 头部滚转：待机歪头 + 重心延迟 + 摇头；统一限幅，防止夸张角度
+    nodes.head.rotation.z = clampTilt(
+      Math.sin(t * 0.7) * 0.015 + 0.1 * this.thinkEnv - this.sadEnv * 0.03
+      + sadWave * MOTION.shake.headRoll3d
+      + this.idle.tilt
+      + this.weight.head * G.headRoll,
+    );
+    nodes.head.position.y = this.headY0 - this.bowHead * 0.02 + this.idle.y * G.idleBob + br.head * 0.004;
     nodes.head.position.z = this.headZ0 + this.bowHead * 0.26;
 
     if (this.sadDrop) {
@@ -507,17 +606,24 @@ export class WhaleGirlRenderer3D {
       this.sadDrop.position.y = 0.18 - Math.min(0.07, tSad * 0.035) + Math.sin(tSad * 5) * 0.004;
     }
 
-    nodes.sideLockL.rotation.z = nodes.sideLockL.userData.rest.rot.z + Math.sin(t * 1.1) * 0.035;
+    // 次级运动：头发/侧发/呆毛/尾巴都比躯干晚、幅度小
+    nodes.sideLockL.rotation.z = nodes.sideLockL.userData.rest.rot.z + Math.sin(t * 1.1) * 0.035
+      + this.bowHead * 0.04;
     nodes.sideLockL.rotation.x = nodes.sideLockL.userData.rest.rot.x + Math.sin(t * 0.9) * 0.03;
-    nodes.sideLockR.rotation.z = nodes.sideLockR.userData.rest.rot.z + Math.sin(t * 1.1 + 0.4) * 0.035;
+    nodes.sideLockR.rotation.z = nodes.sideLockR.userData.rest.rot.z + Math.sin(t * 1.1 + 0.4) * 0.035
+      + this.bowHead * 0.04;
     nodes.sideLockR.rotation.x = nodes.sideLockR.userData.rest.rot.x + Math.sin(t * 0.9 + 0.4) * 0.03;
 
     nodes.ahoge.rotation.z = nodes.ahoge.userData.rest.rot.z + Math.sin(t * 2.1) * 0.12;
-    nodes.ahoge.rotation.x = nodes.ahoge.userData.rest.rot.x + Math.sin(t * 1.7) * 0.06;
+    nodes.ahoge.rotation.x = nodes.ahoge.userData.rest.rot.x + Math.sin(t * 1.7) * 0.06
+      + this.bowHead * 0.16 + this.weight.pelvis * 0.008;
 
     if (nodes.tail) {
-      nodes.tail.rotation.z = nodes.tail.userData.rest.rot.z + Math.sin(t * 0.8) * 0.05;
-      nodes.tail.rotation.y = Math.sin(t * 0.62) * 0.09;
+      nodes.tail.rotation.z = nodes.tail.userData.rest.rot.z + Math.sin(t * 0.8) * 0.05
+        + this.weight.pelvis * 0.010;
+      nodes.tail.rotation.y = Math.sin(t * 0.62) * 0.09 + this.idle.x * 0.012;
+      // 鞠躬时尾巴反向轻摆作配重（延迟相位）
+      nodes.tail.rotation.x = (nodes.tail.userData.rest.rot.x || 0) + this.bowPoseOut.tail * 0.12;
     }
     if (nodes.finL && nodes.finR) {
       const twitch = Math.sin(t * 2.4) * 0.045 + this.speakEnv * Math.sin(t * 5.4) * 0.02;
@@ -526,14 +632,25 @@ export class WhaleGirlRenderer3D {
     }
     if (nodes.hairBack) {
       nodes.hairBack.rotation.z = Math.sin(t * 0.75) * 0.012;
-      nodes.hairBack.rotation.x = Math.sin(t * 0.55) * 0.008;
+      nodes.hairBack.rotation.x = Math.sin(t * 0.55) * 0.008 + this.bowHead * 0.05;
     }
 
     const lift = this.singEnv * 0.55 + this.happyEnv * 0.95;
     nodes.armL.rotation.z = nodes.armL.userData.rest.rot.z + Math.sin(t * 1.2) * 0.04 - lift;
     nodes.armR.rotation.z = nodes.armR.userData.rest.rot.z - Math.sin(t * 1.2) * 0.04 + lift;
-    nodes.armL.rotation.x = Math.sin(t * 1.05) * 0.04 + this.bowEnv * 0.10;
-    nodes.armR.rotation.x = -Math.sin(t * 1.05) * 0.04 + this.bowEnv * 0.10;
+    nodes.armL.rotation.x = Math.sin(t * 1.05) * 0.04 + this.bowPoseOut.arm;
+    nodes.armR.rotation.x = -Math.sin(t * 1.05) * 0.04 + this.bowPoseOut.arm;
+
+    const dbg = this.debug;
+    dbg.tilt = nodes.head.rotation.z;
+    dbg.headPan = idleYaw;
+    dbg.bowBend = this.bowEnv;
+    dbg.bowHead = this.bowHead;
+    dbg.sadWave = sadWave;
+    dbg.blink = this.blinkScheduler.closure;
+    dbg.breath = br.signed;
+    dbg.pelvis = this.weight.pelvis;
+    dbg.chest = this.weight.chest;
 
     for (const item of this.thoughts) {
       const target = thinking ? 0.7 : 0;

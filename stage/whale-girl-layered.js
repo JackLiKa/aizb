@@ -1,15 +1,28 @@
 // 分层 2D 渲染器：用设定图拆出的头/身/眼/嘴图层驱动眨眼、口型、呼吸和摇摆。
 // 与 whale-girl.js 的程序化画法不同，这里保留原画像素，只叠加局部动画。
+//
+// 动作/物理曲线全部来自 motion-profiles.js，三层渲染器共用同一套参数与节奏。
 
-const TAU = Math.PI * 2;
+import {
+  TAU,
+  MOTION,
+  clamp,
+  clampTilt,
+  damp,
+  springStep,
+  breathAt,
+  weightAt,
+  BlinkScheduler,
+  idleGap,
+  idlePose,
+  pickIdleAction,
+  bowPose,
+  shakeGate,
+  shakeEnvelope,
+  hopPose,
+} from './motion-profiles.js';
+
 const ASSET = './assets/avatar/';
-
-const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-
-const smoothstep = (v) => {
-  const x = clamp(v, 0, 1);
-  return x * x * (3 - 2 * x);
-};
 
 function parseHex(hex) {
   const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || ''));
@@ -60,14 +73,25 @@ export class LayeredGirlRenderer {
     this.mouthTarget = 0;
     this.blink = 0;
     this.blinkHold = null;
-    this.blinkT = -1;
-    this.nextBlink = 2.4;
-    this.doubleBlink = false;
+    // 眨眼节律：不规律间隔 + 偶发连眨（motion-profiles 内参数化）
+    this.blinkScheduler = new BlinkScheduler();
     this.idleAction = null;
     this.idleNext = 1.6 + Math.random() * 1.8;
     this.idle = { x: 0, y: 0, tilt: 0 };
     this.idleTarget = { x: 0, y: 0, tilt: 0 };
     this.idleMouth = 0;
+    // 复用输出对象，避免每帧分配
+    this.breath = {};
+    this.weight = {};
+    this.idlePoseOut = {};
+    this.bowPoseOut = {};
+    this.hopOut = {};
+    // 预填零值：即使调试脚本直接 draw() 而不先 update() 也不会出现 NaN
+    breathAt(0, this.breath);
+    weightAt(0, this.weight);
+    bowPose(0, this.bowPoseOut);
+    hopPose(0, this.hopOut);
+    this.bowHeadState = { x: 0, v: 0 };
     this.particles = [];
     this.notes = [];
     this.bubbles = [];
@@ -75,18 +99,23 @@ export class LayeredGirlRenderer {
     this.happyT0 = 0;
     this.bounceUntil = 0;
     this.bounceStart = 0;
-    this.bounceDur = 1400;
-    this.bounceAmp = 16;
+    this.bounceDur = MOTION.hop.dur;
+    this.bounceAmp = MOTION.hop.amp2d;
     this.bowT0 = 0;
-    this.bowDur = 2400;
+    this.bowDur = MOTION.bow.dur;
     this.bowEnv = 0;
     this.bowHead = 0;
     this.sadT0 = 0;
-    this.sadDur = 4200;
+    this.sadDur = MOTION.shake.dur;
     this.sadEnv = 0;
     this.sadPhase = 0;
     this.sadShakeAmp = 0;
     this._lastNoteAt = 0;
+    // 逐帧诊断快照（供验证脚本量测，不影响绘制）
+    this.debug = {
+      tilt: 0, headPan: 0, headBob: 0, bodyX: 0, shearK: 0, fin: 0,
+      bowBend: 0, bowHead: 0, sadWave: 0, blink: 0, breath: 0, pelvis: 0, chest: 0,
+    };
     this.palette = { fin: palette.finColor || '#6f8fe0' };
     this.w = 1280;
     this.h = 720;
@@ -178,23 +207,27 @@ export class LayeredGirlRenderer {
     const now = performance.now();
     this.bowT0 = 0;
     this.bowHead = 0;
+    this.bowHeadState.x = 0;
+    this.bowHeadState.v = 0;
     this.sadT0 = 0;
     this.sadPhase = 0;
     this.sadShakeAmp = 0;
     this.happyT0 = now;
     this.happyUntil = now + 2600;
     this.bounceStart = now;
-    this.bounceDur = 1400;
-    this.bounceAmp = 16;
+    this.bounceDur = MOTION.hop.dur;
+    this.bounceAmp = MOTION.hop.amp2d;
     this.bounceUntil = now + this.bounceDur;
     this._spawnBurst(36);
   }
 
-  // 礼物：低头鞠躬，持续约 2.4s（预备 → 下压 → 停顿 → 回弹起身）
+  // 礼物：低头鞠躬，持续约 2.4s（预备 → 下压 → 保持 → 回收）
   bow() {
     const now = performance.now();
     this.bowT0 = now;
-    this.bowDur = 2400;
+    this.bowDur = MOTION.bow.dur;
+    this.bowHeadState.x = 0;
+    this.bowHeadState.v = 0;
     this.sadT0 = 0;
     this.sadPhase = 0;
     this.sadShakeAmp = 0;
@@ -209,50 +242,25 @@ export class LayeredGirlRenderer {
   shakeHead() {
     const now = performance.now();
     this.sadT0 = now;
-    this.sadDur = 4200;
+    this.sadDur = MOTION.shake.dur;
     this.sadPhase = 0;
     this.sadShakeAmp = 0;
     this.bowT0 = 0;
     this.bowHead = 0;
+    this.bowHeadState.x = 0;
+    this.bowHeadState.v = 0;
     this.happyUntil = 0;
     this.bounceStart = 0;
     this.bounceUntil = 0;
   }
 
   // 0→1→0 的动作包络：进出一律 smoothstep，避免线性折角造成的顿挫
-  _actionEnv(now, t0, dur, inFrac = 0.22, holdFrac = 0.58) {
-    if (!t0) return 0;
-    const p = (now - t0) / dur;
-    if (p <= 0 || p >= 1) return 0;
-    if (p < inFrac) return smoothstep(p / inFrac);
-    if (p < holdFrac) return 1;
-    return smoothstep((1 - p) / (1 - holdFrac));
-  }
-
-  // 鞠躬曲线：先轻微起身作预备，再下沉、停顿微松，起身带一点回弹
-  _bowCurve(now) {
-    if (!this.bowT0) return 0;
-    const p = (now - this.bowT0) / this.bowDur;
-    if (p <= 0 || p >= 1) return 0;
-    const inEnd = 0.24;
-    const holdEnd = 0.56;
-    if (p < inEnd) {
-      const x = p / inEnd;
-      if (x < 0.28) return -0.06 * smoothstep(x / 0.28);
-      return -0.06 + 1.06 * smoothstep((x - 0.28) / 0.72);
-    }
-    if (p < holdEnd) {
-      const x = (p - inEnd) / (holdEnd - inEnd);
-      return 1 + 0.012 * Math.sin(x * Math.PI * 3) * (1 - x);
-    }
-    const x = (p - holdEnd) / (1 - holdEnd);
-    return 1 - smoothstep(x) + 0.045 * Math.sin(Math.PI * x) * (1 - x);
-  }
-
+  // （具体曲线在 motion-profiles.js，此处仅保留 hop 的取帧入口）
   _hop(now) {
     if (!this.bounceStart || now >= this.bounceUntil) return 0;
     const p = clamp((now - this.bounceStart) / this.bounceDur, 0, 1);
-    return Math.sin(p * Math.PI) * this.bounceAmp;
+    hopPose(p, this.hopOut);
+    return this.hopOut;
   }
 
   _seedBubbles() {
@@ -288,43 +296,40 @@ export class LayeredGirlRenderer {
   }
 
   update(dt, now) {
-    this.bowEnv = this._bowCurve(now);
-    this.sadEnv = this._actionEnv(now, this.sadT0, this.sadDur, 0.12, 0.66);
+    // 姿态层：呼吸与重心转移是持续存在的「生命感」，说话/唱歌时也保留
+    breathAt(this.t, this.breath);
+    weightAt(this.t, this.weight);
 
-    // 头部比身体晚一点跟上、晚一点收回，形成跟随感而不是整体硬切
-    const bowTarget = Math.max(0, this.bowEnv);
-    this.bowHead += (bowTarget - this.bowHead) * Math.min(1, dt * 9);
+    // 动作层：鞠躬曲线 + 头部弹簧跟随（头部晚半步、带轻微过冲后收住）
+    const bowP = this.bowT0 ? clamp((now - this.bowT0) / this.bowDur, 0, 1) : 0;
+    bowPose(this.bowT0 ? bowP : 0, this.bowPoseOut);
+    this.bowEnv = this.bowT0 && bowP < 1 ? this.bowPoseOut.bend : 0;
+    springStep(
+      this.bowHeadState,
+      Math.max(0, this.bowEnv),
+      MOTION.bow.headOmega,
+      MOTION.bow.headZeta,
+      dt,
+    );
+    this.bowHead = this.bowHeadState.x;
+
+    // 难过摇头：缓入包络；只在前 1.15s 摆两下，之后停在无奈表情
+    const sadP = this.sadT0 ? clamp((now - this.sadT0) / this.sadDur, 0, 1) : 1;
+    this.sadEnv = this.sadT0 ? shakeEnvelope(sadP) : 0;
     if (this.sadEnv > 0.001) {
-      // 真人的“不行”是两下就停，不是连续摆满 4 秒
-      this.sadPhase += dt * TAU * 1.7;
-      this.sadShakeAmp += (1 - this.sadShakeAmp) * Math.min(1, dt * 6);
+      this.sadPhase += dt * TAU * MOTION.shake.freq;
+      this.sadShakeAmp = damp(this.sadShakeAmp, 1, 6, dt);
     } else {
       this.sadPhase = 0;
-      this.sadShakeAmp += (0 - this.sadShakeAmp) * Math.min(1, dt * 4.5);
+      this.sadShakeAmp = damp(this.sadShakeAmp, 0, 4.5, dt);
     }
 
-    this.mouth += (this.mouthTarget - this.mouth) * Math.min(1, dt * 16);
+    this.mouth += (this.mouthTarget - this.mouth) * (1 - Math.exp(-dt * MOTION.mouth.omega));
     if (this.mode !== 'speaking') this.mouthTarget *= Math.pow(0.002, dt);
     if (this.mode !== 'speaking' && this.mouth < 0.01) this.mouth = 0;
 
-    if (this.blinkHold != null) {
-      this.blink = this.blinkHold;
-    } else if (this.blinkT >= 0) {
-      this.blinkT += dt;
-      const p = this.blinkT / 0.17;
-      this.blink = p >= 1 ? 0 : Math.sin(Math.PI * clamp(p, 0, 1));
-      if (p >= 1) {
-        this.blinkT = -1;
-        if (this.doubleBlink) {
-          this.doubleBlink = false;
-          this.nextBlink = this.t + 0.26;
-        } else {
-          this.nextBlink = this.t + 2.2 + Math.random() * 3.4;
-        }
-      }
-    } else if (this.t > this.nextBlink) {
-      this.blinkT = 0;
-    }
+    // 眨眼：手动 hold 优先（调试/闭眼定格），否则走不规律节律
+    this.blink = this.blinkHold != null ? this.blinkHold : this.blinkScheduler.update(dt);
 
     this._updateIdle(dt, now);
     this.thinkEnv += (((this.mode === 'thinking') ? 1 : 0) - this.thinkEnv) * Math.min(1, dt * 4);
@@ -369,22 +374,20 @@ export class LayeredGirlRenderer {
   }
 
   // 待机时每隔几秒挑一个随机小动作，让形象自己「活」起来：
-  // 张望、歪头、点头、哼歌动嘴、轻颤、连眨。说话/唱歌/思考时自动让位。
-  _startIdleAction(now) {
-    const pool = ['glance', 'glance', 'glance', 'tilt', 'nod', 'hum', 'sway', 'blink2'];
-    const kind = pool[Math.floor(Math.random() * pool.length)];
-    const dur = { glance: 1.8, tilt: 2.2, nod: 1.4, hum: 1.3, sway: 2.6, blink2: 0.45 }[kind];
+  // 张望、歪头、点头、哼歌、轻晃、连眨。说话/唱歌/思考时自动让位。
+  _startIdleAction() {
+    const kind = pickIdleAction();
+    const A = MOTION.idle.actions[kind];
     this.idleAction = {
       kind,
       t0: this.t,
-      dur,
+      // 张望的时长带一点抖动，避免动作像节拍器
+      dur: kind === 'glance' ? A.dur + Math.random() * 0.45 : A.dur,
       dir: Math.random() < 0.5 ? -1 : 1,
       seed: Math.random() * TAU,
+      fired: false,
     };
-    if (kind === 'blink2') {
-      this.blinkT = 0;
-      this.doubleBlink = true;
-    }
+    this.idleNext = this.t + 1e9; // 动作结束后再重新排期
   }
 
   _updateIdle(dt, now) {
@@ -392,7 +395,6 @@ export class LayeredGirlRenderer {
     const acting = this.bowEnv > 0.01 || this.sadEnv > 0.01;
     if (this.mode !== 'idle' || acting) {
       this.idleAction = null;
-      this.doubleBlink = false;
       target.x = 0;
       target.y = 0;
       target.tilt = 0;
@@ -403,60 +405,55 @@ export class LayeredGirlRenderer {
         target.x = 0;
         target.y = 0;
         target.tilt = 0;
-        if (this.t >= this.idleNext) this._startIdleAction(now);
+        if (this.t >= this.idleNext) this._startIdleAction();
       } else {
         const p = clamp((this.t - a.t0) / a.dur, 0, 1);
-        const env = Math.sin(Math.PI * p);
-        if (a.kind === 'glance') {
-          target.x = a.dir * 3.8 * env;
-          target.y = -1.1 * env;
-          target.tilt = a.dir * 0.038 * env;
-        } else if (a.kind === 'tilt') {
-          target.x = a.dir * 1.5 * env;
-          target.y = 0.8 * env;
-          target.tilt = a.dir * 0.055 * env;
-        } else if (a.kind === 'nod') {
-          target.y = Math.sin(p * Math.PI * 4) * 3.0 * (1 - p);
-          target.x = 0;
-          target.tilt = Math.sin(p * Math.PI * 2) * 0.010 * (1 - p);
-        } else if (a.kind === 'sway') {
-          target.x = Math.sin(p * Math.PI * 2) * a.dir * 1.8 * env;
-          target.y = 0.4 * env;
-          target.tilt = Math.sin(p * Math.PI * 2) * a.dir * 0.014 * env;
-        } else {
-          target.x = 0;
-          target.y = 0;
-          target.tilt = 0;
+        idlePose(a.kind, p, a.dir, this.t, a.seed, this.idlePoseOut);
+        target.x = this.idlePoseOut.x;
+        target.y = this.idlePoseOut.y;
+        target.tilt = this.idlePoseOut.tilt;
+        this.idleMouth = this.idlePoseOut.mouth;
+        if (this.idlePoseOut.doubleBlink && !a.fired) {
+          a.fired = true;
+          this.blinkScheduler.triggerDouble();
         }
-        this.idleMouth = a.kind === 'hum'
-          ? 0.10 + 0.11 * env * (0.5 + 0.5 * Math.sin(this.t * 15 + a.seed))
-          : 0;
         if (p >= 1) {
           this.idleAction = null;
           this.idleMouth = 0;
-          this.idleNext = this.t + 2.2 + Math.random() * 3.8;
+          this.idleNext = this.t + idleGap();
         }
       }
     }
-    const k = 1 - Math.pow(0.0008, dt);
-    this.idle.x += (target.x - this.idle.x) * k;
-    this.idle.y += (target.y - this.idle.y) * k;
-    this.idle.tilt += (target.tilt - this.idle.tilt) * k;
+    // 一阶指数平滑：无过冲、无高频抖动
+    const panK = 1 - Math.exp(-dt * 9);
+    const tiltK = 1 - Math.exp(-dt * 8);
+    this.idle.x += (target.x - this.idle.x) * panK;
+    this.idle.y += (target.y - this.idle.y) * panK;
+    this.idle.tilt += (target.tilt - this.idle.tilt) * tiltK;
     if (this.mode !== 'idle') this.idleMouth *= Math.pow(0.002, dt);
   }
 
-  // 尾摆与上身反作用共用一份相位，避免身体和尾巴各摆各的
+  // 尾摆与上身反作用共用一份相位，避免身体和尾巴各摆各的。
+  // 同时叠加「骨盆→胸腔」的重心转移：骨盆由整图平移承担，
+  // 胸腔相对骨盆的反向代偿用绕髋剪切表达，头部再延迟跟随。
   _tailSwing() {
-    const liven = 1 + 0.55 * Math.min(1, Math.abs(this.idle.x) / 2.4 + Math.abs(this.idle.tilt) / 0.06);
-    const ph = this.t * 1.15 * liven + 0.9;
-    // 尾鳍外摆（源像素）：760 行以下只剩垂下的鲸尾与尾鳍，尾根是铰链
-    const fin = this.tailAmp * Math.sin(ph);
-    // 上身反作用：绕髋部倾斜，尾鳍往右甩时上半身往左让，略滞后于鳍
-    const lean = -0.5 * this.tailAmp * Math.sin(ph - 0.22);
-    const hipY = 600;
+    const P = MOTION.posture2d;
+    const W = this.weight;
+    const bowDamp = 1 - Math.max(0, this.bowEnv) * 0.65;
+    const liven = 1 + 0.55 * Math.min(1, Math.abs(this.idle.x) / 2.4 + Math.abs(this.idle.tilt) / 0.06)
+      + 0.15 * Math.min(1, Math.abs(W.pelvis) / MOTION.weight.pelvis);
+    const ph = this.t * P.tailFreq * liven + 0.9;
+    // 呼吸会轻微带动尾巴（次级运动），鞠躬时尾巴反向轻摆作配重
+    const fin = this.tailAmp * Math.sin(ph) * (1 + 0.10 * this.breath.signed)
+      + this.bowPoseOut.tail * this.tailAmp;
+    // 上身反作用：尾鳍往右甩时上半身往左让，略滞后于鳍
+    const tailLean = P.tailGain * this.tailAmp * Math.sin(ph - P.tailLag);
+    const bodyX = W.pelvis * bowDamp;
+    const topOffset = tailLean + (W.chest - W.pelvis) * bowDamp;
+    const hipY = P.hipY;
     // 剪切系数：x' = x + k*(hipY - y)，等价于绕髋的微小旋转
-    const k = lean / Math.max(1, hipY - this.pivot[1]);
-    return { fin, lean, hipY, k };
+    const k = topOffset / Math.max(1, hipY - this.pivot[1]);
+    return { fin, lean: topOffset, bodyX, hipY, k };
   }
 
   // 整张身体图都绕髋做剪切：髋部以上越往上位移越大、尾根以下继续外摆。
@@ -466,13 +463,17 @@ export class LayeredGirlRenderer {
     const H = img.height;
     const sw = this.sw;
     const t0 = Math.min(this.tailY || H, H);
-    const { fin, hipY, k } = swing;
+    const { fin, bodyX, hipY, k } = swing;
     const shear = (y) => k * (hipY - y);
+
+    // 骨盆整体平移（含上下两端）；剪切在平移之上叠加
+    ctx.save();
+    ctx.translate(bodyX, 0);
 
     if (t0 > 0) {
       ctx.save();
       ctx.beginPath();
-      ctx.rect(0, 0, sw, t0);
+      ctx.rect(-12, 0, sw + 24, t0);
       ctx.clip();
       ctx.transform(1, 0, -k, 1, k * hipY, 0);
       ctx.drawImage(img, 0, 0, sw, t0, 0, 0, sw, t0);
@@ -480,20 +481,22 @@ export class LayeredGirlRenderer {
     }
 
     const span = H - t0;
-    if (span <= 0) return;
-    // 尾段：剪切位移（尾根处接上上身）+ 尾根 0 起坡、尾尖最大的摆幅
-    const bands = 48;
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(0, t0, sw, span);
-    ctx.clip();
-    for (let i = 0; i < bands; i += 1) {
-      const y0 = t0 + Math.round((span * i) / bands);
-      const y1 = t0 + Math.round((span * (i + 1)) / bands);
-      if (y1 <= y0) continue;
-      const kk = (y0 + y1) * 0.5 - t0;
-      const dx = shear(t0) + fin * (kk / span) * (kk / span);
-      ctx.drawImage(img, 0, y0, sw, y1 - y0, dx, y0, sw, y1 - y0);
+    if (span > 0) {
+      // 尾段：剪切位移（尾根处接上上身）+ 尾根 0 起坡、尾尖最大的摆幅
+      const bands = 48;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(-12, t0, sw + 24, span);
+      ctx.clip();
+      for (let i = 0; i < bands; i += 1) {
+        const y0 = t0 + Math.round((span * i) / bands);
+        const y1 = t0 + Math.round((span * (i + 1)) / bands);
+        if (y1 <= y0) continue;
+        const kk = (y0 + y1) * 0.5 - t0;
+        const dx = shear(t0) + fin * (kk / span) * (kk / span);
+        ctx.drawImage(img, 0, y0, sw, y1 - y0, dx, y0, sw, y1 - y0);
+      }
+      ctx.restore();
     }
     ctx.restore();
   }
@@ -505,41 +508,40 @@ export class LayeredGirlRenderer {
     this._drawBackground(ctx, w, h);
     this._drawBubbles(ctx, w, h);
 
-    // 弹跳必须是有界的地面起跳：旧公式 sin(x)*x*16 会冲到 ±100px，
-    // 把整只角色顶出画面（看起来像动作穿模/瞬移）
-    const bounce = this._hop(now);
+    // 庆祝弹跳：下蹲 → 抛物线腾空 → 落地压缩，hopPose 保证有界
+    const hop = this._hop(now);
     const s = Math.min((h * 0.92) / this.sh, (w * 0.52) / this.sw);
     const cw = this.sw * s;
     const ch = this.sh * s;
     const cx = w * 0.5;
-    const baseY = h * 0.99 - bounce;
+    const baseY = h * 0.99 - (hop ? hop.y : 0) * MOTION.hop.amp2d;
 
     this._drawGlow(ctx, cx, baseY - ch * 0.55, Math.max(cw, ch * 0.4));
 
-    const breath = Math.sin(this.t * 1.45);
-    const breathX = 1 + 0.0025 * breath;
-    const breathY = 1 + 0.004 * breath;
-    // 摇头：先大后小地衰减，身体反向轻带一点，脖子才不会像被甩脱
+    // 呼吸：胸腔扩张（缩放）+ 头部延迟起伏；不产生高频抖动
+    const br = this.breath;
+    const breathX = 1 + br.chestX;
+    const breathY = 1 + br.chestY;
+    const P = MOTION.posture2d;
     const sadP = this.sadDur ? clamp((now - this.sadT0) / this.sadDur, 0, 1) : 1;
     // 摇头只占前 1.15s：正弦包络快速起、末尾归零，之后停在无奈表情上
-    const shakeP = this.sadT0 ? clamp((now - this.sadT0) / 1150, 0, 1) : 1;
-    const shakeGate = this.sadT0
-      ? Math.pow(Math.sin(Math.PI * shakeP), 0.65) * (1 - 0.45 * shakeP)
-      : 0;
-    const sadWave = Math.sin(this.sadPhase) * this.sadEnv * this.sadShakeAmp * (1 - 0.5 * sadP) * shakeGate;
-    const sway = Math.sin(this.t * 0.62) * 0.010 + Math.sin(this.t * 0.23 + 1.1) * 0.004
-      - sadWave * 0.004;
-    // 起跳时轻微拉伸、落地回弹，让弹跳有重量感
-    const hopE = this.bounceAmp ? clamp(bounce / this.bounceAmp, 0, 1) : 0;
-    const hopStretch = 1 + 0.035 * hopE;
+    const shakeP = this.sadT0 ? clamp((now - this.sadT0) / MOTION.shake.waveDur, 0, 1) : 1;
+    const gate = this.sadT0 ? shakeGate(shakeP) : 0;
+    const sadWave = Math.sin(this.sadPhase) * this.sadEnv * this.sadShakeAmp * (1 - 0.5 * sadP) * gate;
+    // 整体慢摇摆 + 重心转移带来的轻微滚转 + 躯干反向轻带
+    const sway = Math.sin(this.t * P.swayFreq) * P.swayAmp
+      + Math.sin(this.t * P.swayFreq2 + 1.1) * P.swayAmp2
+      + this.weight.roll * 0.35
+      - sadWave * MOTION.shake.body2d;
 
     ctx.save();
     ctx.translate(cx, baseY);
     ctx.rotate(sway);
-    ctx.scale(breathX * (1 - 0.025 * hopE), breathY * hopStretch);
-    if (this.bowEnv > 0.001 || this.bowEnv < -0.001) {
-      ctx.translate(0, this.bowEnv * 10);
-      ctx.scale(1 + this.bowEnv * 0.010, 1 - this.bowEnv * 0.035);
+    ctx.scale(breathX * (hop ? hop.scaleX : 1), breathY * (hop ? hop.scaleY : 1));
+    // 鞠躬：整体下沉 + 极轻的体积压缩（最多 3.5%），不是「砸下去」
+    if (this.bowT0) {
+      ctx.translate(0, this.bowPoseOut.sink);
+      ctx.scale(this.bowPoseOut.scaleX, this.bowPoseOut.scaleY);
     }
     ctx.translate(-cw / 2, -ch);
     ctx.scale(s, s);
@@ -548,7 +550,9 @@ export class LayeredGirlRenderer {
     this._drawBody(ctx, swing);
 
     const [px, py] = this.pivot;
-    let tilt = (Math.sin(this.t * 0.82 + 0.6) * 0.020 + this.idle.tilt) * (1 - 0.85 * this.sadEnv);
+    // 头部：基础微晃 + 待机动作；摇头/思考/唱歌时按模式叠加
+    let tilt = (Math.sin(this.t * MOTION.head.swayFreq + 0.6) * MOTION.head.swayAmp + this.idle.tilt)
+      * (1 - MOTION.shake.breathDamp * this.sadEnv);
     if (this.thinkEnv > 0.001) tilt -= 0.052 * this.thinkEnv;
     if (this.singEnv > 0.001) tilt += Math.sin(this.t * 2.1) * 0.014 * this.singEnv;
     if (now < this.happyUntil && this.happyT0) {
@@ -556,23 +560,46 @@ export class LayeredGirlRenderer {
       const fade = clamp((this.happyUntil - now) / 1200, 0, 1);
       tilt += Math.sin(hp * TAU * 1.7) * 0.018 * fade;
     }
-    const sadShake = Math.sin(this.sadPhase) * 0.036 * this.sadEnv * this.sadShakeAmp * (1 - 0.5 * sadP) * shakeGate;
+    const sadShake = Math.sin(this.sadPhase) * MOTION.shake.amp2d * this.sadEnv
+      * this.sadShakeAmp * (1 - 0.5 * sadP) * gate;
     if (this.sadEnv > 0.001) tilt += sadShake + 0.012 * this.sadEnv;
-    if (this.bowHead > 0.001) tilt += this.bowHead * 0.052;
+    if (this.bowHead > 0.001) tilt += this.bowHead * MOTION.bow.headNod;
     // 脖子跟一点上身的倾斜，但幅度只有一半，头仍然是「稳」的
-    tilt += swing.k * 0.5;
+    tilt += swing.k * MOTION.head.neckFollow;
+    // 重心转移的延迟头部滚转
+    tilt += this.weight.roll;
     // 头绕颈根旋转，限幅避免发梢/下巴把脖子或衣服撕开
-    tilt = clamp(tilt, -0.095, 0.095);
-    const headBob = Math.sin(this.t * 1.45 + 0.9) * 1.6 + this.idle.y
-      + this.bowHead * 40 + this.sadEnv * 1.4;
-    const headPan = this.idle.x + sadWave * 0.8;
+    tilt = clampTilt(tilt);
+    // 头部起伏：呼吸 + 待机点头 + 鞠躬跟随 + 难过轻沉
+    const headBob = Math.sin(this.t * 1.45 + 0.9) * 0.5 + br.head * 2 + this.idle.y
+      + this.bowHead * MOTION.bow.headBob + this.sadEnv * 1.4;
+    // 头部位移：待机张望 + （头部−胸腔）的延迟跟随；胸腔偏移已在 body 剪切里
+    const wDamp = 1 - Math.max(0, this.bowEnv) * 0.65;
+    const headPan = this.idle.x + (this.weight.head - this.weight.chest) * wDamp
+      + sadWave * MOTION.shake.pan2d;
     // 难过时让原嘴淡出、只留画在干净皮肤上的小撇嘴，避免叠出“补丁嘴”
     const sadMouth = clamp((this.sadEnv - 0.3) / 0.4, 0, 1);
+
+    // 逐帧诊断快照（验证脚本读取；无分配）
+    const dbg = this.debug;
+    dbg.tilt = tilt;
+    dbg.headPan = headPan;
+    dbg.headBob = headBob;
+    dbg.bodyX = swing.bodyX;
+    dbg.shearK = swing.k;
+    dbg.fin = swing.fin;
+    dbg.bowBend = this.bowEnv;
+    dbg.bowHead = this.bowHead;
+    dbg.sadWave = sadWave;
+    dbg.blink = this.blink;
+    dbg.breath = br.signed;
+    dbg.pelvis = this.weight.pelvis;
+    dbg.chest = this.weight.chest;
 
     ctx.save();
     // 头部只做刚体变换（绕颈根旋转 + 平移）：剪切会把脸拉斜，近看像橡皮
     // 上身倾了多少，颈根就平移多少，头跟着走才不会从脖子上脱落
-    ctx.translate(px + headPan + swing.lean, py + headBob);
+    ctx.translate(px + headPan + swing.lean + swing.bodyX, py + headBob);
     ctx.rotate(tilt);
     ctx.translate(-px, -py);
     ctx.drawImage(this.headImg, 0, 0);
